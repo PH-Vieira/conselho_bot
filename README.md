@@ -93,9 +93,4 @@ Se o bot travar por problemas de sessão (conta emparelhada em outro local), ver
 
 ---
 
-Se quiser, eu posso:
-- Adicionar um `README` mais detalhado com exemplos de `config.json` customizados;
-- Gerar um `docker-compose` para rodar o bot em container;
-- Adicionar scripts de testes unitários básicos.
-
 Divirta-se! ⚖️✨

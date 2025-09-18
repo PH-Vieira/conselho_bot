@@ -210,11 +210,14 @@ export default function registerMessageHandlers(sock) {
           const u = db.data.users[voterId] || { xp: 0, votesCount: 0 };
           const lvl = levelFromXp(u.xp || 0);
           const title = titleForLevel(lvl.level);
-          await safePost(
-            sock,
-            group.id,
-            `👤 ${sender} — Nível ${lvl.level} (${title})\nXP: ${u.xp || 0} — ${lvl.xpIntoLevel}/${lvl.xpForNextLevel} para o próximo nível\nVotos registrados: ${u.votesCount || 0}`
-          );
+          const badge = helpers.badgeForLevel(lvl.level);
+          const bar = helpers.progressBar(lvl.xpIntoLevel, lvl.xpForNextLevel, 12);
+          const emoji = helpers.pickRandom(helpers.EMOJI_POOLS.confirm);
+          const msgText = [];
+          msgText.push(`${badge} 👤 ${sender} — *Nível ${lvl.level}* (${title})`);
+          msgText.push(`XP: ${u.xp || 0} (${lvl.xpIntoLevel}/${lvl.xpForNextLevel}) ${bar}`);
+          msgText.push(`Votos registrados: ${u.votesCount || 0} ${emoji}`);
+          await safePost(sock, group.id, msgText.join('\n'));
           continue;
         }
 
