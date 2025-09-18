@@ -35,7 +35,17 @@ export default function registerMessageHandlers(sock) {
     for (const msg of messages) {
       logger.debug({ msgKey: msg.key, message: msg.message }, 'messages.upsert received');
       try {
-        const m = msg.message;
+        function unwrapMessage(message) {
+          let m = message || {};
+          if (m.ephemeralMessage && m.ephemeralMessage.message) m = m.ephemeralMessage.message;
+          if (m.viewOnceMessage && m.viewOnceMessage.message) m = m.viewOnceMessage.message;
+          // some payloads nest message inside .message (safeguard)
+          if (m.message && m.message.ephemeralMessage && m.message.ephemeralMessage.message) m = m.message.ephemeralMessage.message;
+          if (m.message && m.message.viewOnceMessage && m.message.viewOnceMessage.message) m = m.message.viewOnceMessage.message;
+          return m;
+        }
+
+        const m = unwrapMessage(msg.message);
         const remoteJid = msg.key.remoteJid;
         const isGroup = remoteJid?.endsWith('@g.us');
         if (!isGroup) continue;
@@ -222,7 +232,7 @@ export default function registerMessageHandlers(sock) {
 
         // --- Perfil: !me
         if (ntext === '!me') {
-          const voterId = msg.key.participant || msg.key.remoteJid;
+          const voterId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
           ensureUser(voterId);
           const u = db.data.users[voterId] || { xp: 0, votesCount: 0 };
           const lvl = levelFromXp(u.xp || 0);
@@ -298,7 +308,7 @@ export default function registerMessageHandlers(sock) {
           // try by id first (preserve case)
           const targetById = (db.data.proposals || []).find((p) => p.id === idOrName && p.groupJid === group.id);
           let target = targetById;
-          const voterId = msg.key.participant || msg.key.remoteJid;
+          const voterId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
           // support '!votar last' to vote on most recent open
           if (!target && helpers.normalizeText(idOrName) === 'last' || helpers.normalizeText(idOrName) === 'ultimo') {
             target = (db.data.proposals || []).filter((p) => p.groupJid === group.id && p.status === 'open').slice(-1)[0];
@@ -496,7 +506,7 @@ export default function registerMessageHandlers(sock) {
         if (text) {
           const target = (db.data.proposals || []).filter((p) => p.groupJid === group.id && p.status === 'open').slice(-1)[0];
           if (target) {
-            const voterId = msg.key.participant || msg.key.remoteJid;
+            const voterId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
             const existing = target.votes[voterId];
             const isFinal = existing && typeof existing !== 'string' ? !!existing.final : false;
 
@@ -576,7 +586,7 @@ export default function registerMessageHandlers(sock) {
           if (match) {
             const target = (db.data.proposals || []).filter((p) => p.groupJid === group.id && p.status === 'open').slice(-1)[0];
             if (target) {
-              const voterId = msg.key.participant || msg.key.remoteJid;
+              const voterId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
               const existing = target.votes[voterId];
               const isFinal = existing && typeof existing !== 'string' ? !!existing.final : false;
 
