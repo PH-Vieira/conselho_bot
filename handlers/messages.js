@@ -250,30 +250,60 @@ export default function registerMessageHandlers(sock) {
 
         // --- Ranking: !ranking
         if (ntext === '!ranking') {
-          const all = listUsers();
-          // Only include users who have an explicit saved name in the DB
-          const arr = Object.entries(all || {})
-            .filter(([jid, data]) => data && data.name)
-            .map(([jid, data]) => ({ jid, xp: data.xp || 0, votesCount: data.votesCount || 0, name: data.name }))
-            .sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp)
-            .slice(0, 10);
+          // Build a map of users combining saved DB users and any JIDs that appear in proposal votes
+          const usersMap = {};
 
-          if (arr.length === 0) {
-            await safePost(sock, group.id, 'ℹ️ Nenhum voto registrado com nome salvo ainda.');
+          // 1) seed from db.data.users
+          const dbUsers = listUsers() || {};
+          for (const [jid, data] of Object.entries(dbUsers)) {
+            usersMap[jid] = {
+              jid,
+              name: data.name || null,
+              xp: Number(data.xp || 0),
+              votesCount: Number(data.votesCount || 0),
+            };
+          }
+
+          // 2) scan proposals for voters and merge missing entries
+          for (const p of db.data.proposals || []) {
+            if (p.groupJid !== group.id) continue;
+            for (const voterJid of Object.keys(p.votes || {})) {
+              const norm = voterJid;
+              if (!usersMap[norm]) {
+                usersMap[norm] = { jid: norm, name: null, xp: 0, votesCount: 0 };
+              }
+              // count votes per proposal (some code stores objects with vote/final)
+              usersMap[norm].votesCount = (usersMap[norm].votesCount || 0) + 1;
+            }
+          }
+
+          // If after scanning we have no users, respond helpfully
+          const allRows = Object.values(usersMap || {});
+          if (!allRows || allRows.length === 0) {
+            await safePost(sock, group.id, 'ℹ️ Nenhum voto registrado ainda.');
             continue;
           }
 
-          // compute max XP for percentage display (avoid divide by zero)
-          const maxXp = Math.max(...arr.map((r) => r.xp || 0), 1);
+          // Enrich name fallback: if user has no saved name, try to use local part of JID
+          const rows = allRows
+            .map((r) => ({
+              jid: r.jid,
+              name: r.name || (r.jid ? r.jid.split('@')[0] : 'Unknown'),
+              xp: Number(r.xp || 0),
+              votesCount: Number(r.votesCount || 0),
+            }))
+            .sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp)
+            .slice(0, 10);
 
-          const lines = arr.map((row, i) => {
-            const name = row.name;
+          const maxXp = Math.max(...rows.map((r) => r.xp || 0), 1);
+
+          const lines = rows.map((row, i) => {
             const lvl = levelFromXp(row.xp || 0);
             const title = titleForLevel(lvl.level);
             const badge = helpers.badgeForLevel(lvl.level);
             const bar = helpers.progressBar(lvl.xpIntoLevel, lvl.xpForNextLevel, 12);
             const pct = Math.round(((row.xp || 0) / maxXp) * 100);
-            const firstLine = `${i + 1}) 🟢 ${name} ✨`;
+            const firstLine = `${i + 1}) ${badge} ${row.name} ✨`;
             const voteIcons = row.votesCount >= 3 ? '✅🏆' : row.votesCount === 2 ? '✅🚀' : '👍🚀';
             const secondLine = `   Votos: ${row.votesCount} ${voteIcons} • Nível ${lvl.level} (${title}) • XP: ${row.xp} ${bar} ${pct}%`;
             return `${firstLine}\n${secondLine}`;
