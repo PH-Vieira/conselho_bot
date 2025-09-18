@@ -201,32 +201,45 @@ export default function registerMessageHandlers(sock) {
           continue;
         }
 
-        // 4) Ajuda: !help
+        // 4) Ajuda: !help (resumido)
         if (ntext === '!help') {
           const helpMsg = [];
-          helpMsg.push('🛠️ Conselho de Pautas — comandos úteis:');
+          helpMsg.push('🛠️ Conselho de Pautas — comandos principais:');
           helpMsg.push('');
-          helpMsg.push('• !pauta <título> [<tempo>] — cria uma nova pauta');
-          helpMsg.push("   Ex.: '!pauta Aumentar verba 72h'  ou  '!pauta Reunião 30m'");
-          helpMsg.push('   Se não informar <tempo>, usa o padrão do config (ex.: 24h).');
+          helpMsg.push('• !pauta <título> [<tempo>] — criar nova pauta (ex.: !pauta Reunião 48h)');
+          helpMsg.push('• !votar <id|nome> [sim|nao] — votar (use !votar <nome> para confirmar antes)');
+          helpMsg.push('• Envie "sim"/"nao" ou ✅/❌ — votar na pauta mais recente');
+          helpMsg.push('• Envie a figurinha do Conselho — trava seu voto (finaliza)');
           helpMsg.push('');
-          helpMsg.push('• !contagem — mostra votos atuais e tempo restante da pauta (da pauta mais recente ou use o título no comando)');
-          helpMsg.push('• !pautas — lista as últimas pautas do grupo');
-          helpMsg.push("• !votar <nome> [sim|nao] — vota em uma pauta específica pelo título (ex.: !votar \"Reunião\" nao). Se omitir [sim|nao], apenas confirma qual pauta você selecionou.");
+          helpMsg.push('• !contagem — mostrar votos e prazo da pauta atual');
+          helpMsg.push('• !pautas — listar pautas recentes');
+          helpMsg.push('• !me — ver seu nível, XP e votos registrados');
+          helpMsg.push('• !ranking — ver os maiores votantes (usa JID se nenhum nome salvo)');
+          helpMsg.push('• !setnome <seu nome> — definir nome exibido no ranking');
           helpMsg.push('');
-          helpMsg.push('Como votar:');
-          helpMsg.push("• Envie 'sim' / 'nao' ou ✅ / ❌ — seu voto será registrado.");
-          helpMsg.push("• Envie a figurinha do Conselho para TRAVAR seu voto (não pode mais alterar).");
-          helpMsg.push('');
-          helpMsg.push('Dica: você pode usar o tempo em horas (ex: 48h) ou minutos (ex: 30m).');
-          helpMsg.push('');
-          helpMsg.push('🔥 Sistema de XP e Níveis:');
-          helpMsg.push('• Você ganha XP ao votar — mas apenas uma vez por pauta (votos repetidos na mesma pauta não somam XP).');
-          helpMsg.push('• XP é escalado automaticamente pelo tempo restante da pauta: quanto MAIS tempo faltar para o prazo, MAIS XP você ganha; quanto MAIS perto do prazo, MENOS XP você ganha.');
-          helpMsg.push('• Use `!me` para ver seu nível, XP acumulado, progresso até o próximo nível e número de pautas em que você votou.');
-          helpMsg.push('• Use `!ranking` para ver os maiores votantes do grupo.');
+          helpMsg.push('Para mais detalhes, consulte o README ou peça ao admin.');
 
           await safePost(sock, group.id, helpMsg.join('\n'));
+          continue;
+        }
+
+        // --- Comando: !setnome <nome>
+        if (ntext.startsWith('!setnome')) {
+          const raw = text.split(/\s+/).slice(1).join(' ').trim();
+          const voterId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
+          if (!raw) {
+            await safePost(sock, group.id, `❗ Uso: !setnome <seu nome> — ex.: !setnome João Silva`);
+            continue;
+          }
+          try {
+            ensureUser(voterId);
+            db.data.users[voterId].name = raw;
+            await db.write();
+            await safePost(sock, group.id, `✅ Nome definido: ${raw} (aparecerá no ranking)`);
+          } catch (e) {
+            logger.error({ e, voterId, raw }, 'failed to set name');
+            await safePost(sock, group.id, '❗ Falha ao salvar o nome. Tente novamente.');
+          }
           continue;
         }
 
@@ -284,17 +297,43 @@ export default function registerMessageHandlers(sock) {
             continue;
           }
 
-          // Enrich name fallback: if user has no saved name, try to use local part of JID
-          const rows = allRows
-            .map((r) => ({
-              jid: r.jid,
-              name: r.name || (r.jid ? r.jid.split('@')[0] : 'Unknown'),
-              xp: Number(r.xp || 0),
-              votesCount: Number(r.votesCount || 0),
-            }))
-            .sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp)
-            .slice(0, 10);
+          // Enrich name fallback: try DB name, then group metadata, then socket contacts, then JID local part
+          const resolvedRows = [];
+          for (const r of allRows) {
+            let display = r.name || null;
+            // try group participants metadata
+            try {
+              const part = (group && group.participants) ? (group.participants.find((p) => p.id === r.jid) || null) : null;
+              if (!display && part) {
+                // different Baileys versions use different fields
+                display = part?.name || part?.notify || part?.pushname || null;
+              }
+            } catch (e) {
+              // ignore
+            }
 
+            // try sock contact lookup if available
+            if (!display) {
+              try {
+                if (typeof sock.getName === 'function') {
+                  const n = await sock.getName(r.jid).catch(() => null);
+                  if (n) display = n;
+                }
+                // some environments expose contacts map
+                if (!display && sock.contacts && sock.contacts[r.jid]) {
+                  const c = sock.contacts[r.jid];
+                  display = c.name || c.notify || c.vname || null;
+                }
+              } catch (e) {
+                // ignore
+              }
+            }
+
+            if (!display) display = r.jid ? r.jid.split('@')[0] : 'Unknown';
+            resolvedRows.push({ jid: r.jid, name: display, xp: Number(r.xp || 0), votesCount: Number(r.votesCount || 0) });
+          }
+
+          const rows = resolvedRows.sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp).slice(0, 10);
           const maxXp = Math.max(...rows.map((r) => r.xp || 0), 1);
 
           const lines = rows.map((row, i) => {
@@ -415,7 +454,17 @@ export default function registerMessageHandlers(sock) {
                   // Persist the voter's current display name into the DB so ranking can show names
                   try {
                     ensureUser(voterId);
-                    db.data.users[voterId].name = sender;
+                    // prefer explicit sender, else try to resolve from group metadata or contacts
+                    let resolvedName = sender || null;
+                    if (!resolvedName) {
+                      const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
+                      resolvedName = part?.name || part?.notify || part?.pushname || null;
+                    }
+                    if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
+                      const c = sock.contacts[voterId];
+                      resolvedName = c.name || c.notify || c.vname || null;
+                    }
+                    if (resolvedName) db.data.users[voterId].name = resolvedName;
                     await db.write();
                   } catch (e) {
                     logger.debug({ e, voterId, sender }, 'failed to persist voter name');
@@ -454,7 +503,16 @@ export default function registerMessageHandlers(sock) {
                 const res = await recordUserVoteOnce(voterId, target.id, xp);
                   try {
                     ensureUser(voterId);
-                    db.data.users[voterId].name = sender;
+                    let resolvedName = sender || null;
+                    if (!resolvedName) {
+                      const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
+                      resolvedName = part?.name || part?.notify || part?.pushname || null;
+                    }
+                    if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
+                      const c = sock.contacts[voterId];
+                      resolvedName = c.name || c.notify || c.vname || null;
+                    }
+                    if (resolvedName) db.data.users[voterId].name = resolvedName;
                     await db.write();
                   } catch (e) {
                     logger.debug({ e, voterId, sender }, 'failed to persist voter name');
@@ -551,7 +609,16 @@ export default function registerMessageHandlers(sock) {
                   const res = await recordUserVoteOnce(voterId, target.id, xp);
                   try {
                     ensureUser(voterId);
-                    db.data.users[voterId].name = sender;
+                    let resolvedName = sender || null;
+                    if (!resolvedName) {
+                      const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
+                      resolvedName = part?.name || part?.notify || part?.pushname || null;
+                    }
+                    if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
+                      const c = sock.contacts[voterId];
+                      resolvedName = c.name || c.notify || c.vname || null;
+                    }
+                    if (resolvedName) db.data.users[voterId].name = resolvedName;
                     await db.write();
                   } catch (e) {
                     logger.debug({ e, voterId, sender }, 'failed to persist voter name');
@@ -633,7 +700,16 @@ export default function registerMessageHandlers(sock) {
                       const res = await recordUserVoteOnce(voterId, target.id, xp);
                       try {
                         ensureUser(voterId);
-                        db.data.users[voterId].name = sender;
+                        let resolvedName = sender || null;
+                        if (!resolvedName) {
+                          const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
+                          resolvedName = part?.name || part?.notify || part?.pushname || null;
+                        }
+                        if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
+                          const c = sock.contacts[voterId];
+                          resolvedName = c.name || c.notify || c.vname || null;
+                        }
+                        if (resolvedName) db.data.users[voterId].name = resolvedName;
                         await db.write();
                       } catch (e) {
                         logger.debug({ e, voterId, sender }, 'failed to persist voter name');
@@ -685,7 +761,16 @@ export default function registerMessageHandlers(sock) {
                         const res = await recordUserVoteOnce(voterId, target.id, xp);
                           try {
                             ensureUser(voterId);
-                            db.data.users[voterId].name = sender;
+                            let resolvedName = sender || null;
+                            if (!resolvedName) {
+                              const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
+                              resolvedName = part?.name || part?.notify || part?.pushname || null;
+                            }
+                            if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
+                              const c = sock.contacts[voterId];
+                              resolvedName = c.name || c.notify || c.vname || null;
+                            }
+                            if (resolvedName) db.data.users[voterId].name = resolvedName;
                             await db.write();
                           } catch (e) {
                             logger.debug({ e, voterId, sender }, 'failed to persist voter name');
