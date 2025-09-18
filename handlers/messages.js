@@ -249,22 +249,39 @@ export default function registerMessageHandlers(sock) {
             await safePost(sock, group.id, 'ℹ️ Nenhum voto registrado ainda.');
             continue;
           }
+          // fetch group metadata once to resolve display names
+          let members = [];
+          try {
+            members = (await sock.groupMetadata(group.id)).participants || [];
+          } catch (e) {
+            members = [];
+          }
+
           const lines = await Promise.all(
             arr.map(async (row, i) => {
-              // try to resolve pushName via group participants if available
+              // resolve a friendly name if present
               let name = row.jid;
               try {
-                const member = (await sock.groupMetadata(group.id)).participants.find((p) => p.id === row.jid);
+                const member = members.find((p) => p.id === row.jid);
                 if (member) name = member?.displayName || member?.pushname || row.jid;
               } catch (e) {
                 /* ignore */
               }
+
               const lvl = levelFromXp(row.xp || 0);
               const title = titleForLevel(lvl.level);
-              return `${i + 1}) ${name} — Votos: ${row.votesCount} • Nível ${lvl.level} (${title}) • XP: ${row.xp}`;
+              const badge = helpers.badgeForLevel(lvl.level);
+              const praise = helpers.pickRandom(helpers.EMOJI_POOLS.praise);
+              const extra = helpers.pickRandom(helpers.EMOJI_POOLS.confirm) + helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
+              const bar = helpers.progressBar(lvl.xpIntoLevel, lvl.xpForNextLevel, 12);
+
+              // Two-line entry per user
+              const firstLine = `${i + 1}) ${badge} ${name} ${praise}`;
+              const secondLine = `   Votos: ${row.votesCount} ${extra} • Nível ${lvl.level} (${title}) • XP: ${row.xp} ${bar}`;
+              return `${firstLine}\n${secondLine}`;
             })
           );
-          await safePost(sock, group.id, `🏆 Ranking de votações:\n${lines.join('\n')}`);
+          await safePost(sock, group.id, `🏆 Ranking de votações:\n${lines.join('\n\n')}`);
           continue;
         }
 
