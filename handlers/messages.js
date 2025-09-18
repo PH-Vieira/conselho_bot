@@ -159,6 +159,23 @@ export default function registerMessageHandlers(sock) {
           continue;
         }
 
+        // --- Debug: reannounce a proposal by id: !reannounce <id>
+        // Useful to re-send the formatted proposal text without creating a new one.
+        if (ntext.startsWith('!reannounce')) {
+          const [, rawId] = ntext.split(' ');
+          const target = rawId
+            ? db.data.proposals.find((p) => p.id === rawId && p.groupJid === group.id)
+            : (db.data.proposals || []).filter((p) => p.groupJid === group.id && p.status === 'open').slice(-1)[0];
+          if (!target) {
+            await safePost(sock, group.id, 'ℹ️ Pauta não encontrada para reannounciar. Use: !reannounce <id>');
+            continue;
+          }
+          const left = helpers.humanTimeLeft(target.deadlineISO);
+          const fmt = helpers.formatToUTCMinus3(target.deadlineISO);
+          await safePost(sock, group.id, `📢 (re)Pauta *${target.title}* aberta por *${target.openedBy}*:\n> ${target.title}\n⏳ Prazo: ${left} (até ${fmt}).`);
+          continue;
+        }
+
         // 3) Listar pautas: !pautas
         if (ntext === '!pautas') {
           const list = (db.data.proposals || [])
@@ -195,7 +212,7 @@ export default function registerMessageHandlers(sock) {
           helpMsg.push('');
           helpMsg.push('🔥 Sistema de XP e Níveis:');
           helpMsg.push('• Você ganha XP ao votar — mas apenas uma vez por pauta (votos repetidos na mesma pauta não somam XP).');
-          helpMsg.push('• XP é escalado automaticamente pelo tempo da pauta: pautas mais curtas (urgentes) dão MAIS XP; pautas muito longas dão MENOS XP. Isso incentiva participação em pautas de curta duração.');
+          helpMsg.push('• XP é escalado automaticamente pelo tempo restante da pauta: quanto MAIS tempo faltar para o prazo, MAIS XP você ganha; quanto MAIS perto do prazo, MENOS XP você ganha.');
           helpMsg.push('• Use `!me` para ver seu nível, XP acumulado, progresso até o próximo nível e número de pautas em que você votou.');
           helpMsg.push('• Use `!ranking` para ver os maiores votantes do grupo.');
 
@@ -352,13 +369,20 @@ export default function registerMessageHandlers(sock) {
                 const res = await recordUserVoteOnce(voterId, target.id, xp);
                 if (res.awarded && res.newLevel > res.oldLevel) {
                   const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
-                  await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                  // send detailed level-up in DM and a short hint in the group
+                  try {
+                    await safePost(sock, voterId, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                    await safePost(sock, group.id, `${em} ${sender}, confira sua DM.`);
+                  } catch (e) {
+                    // fallback: if DM fails, still try to notify in group
+                    await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                  }
                 }
               } catch (e) {
                 logger.debug({ e, voterId, targetId: target.id }, 'award xp failed');
               }
-              await safePost(sock, group.id, `✅ ${sender} votou *SIM* na pauta ${target.title}.`);
-              // private confirmation
+              // short group hint and detailed private confirmation
+              await safePost(sock, group.id, `✅ ${sender}, seu voto foi registrado — confira sua DM.`);
               try {
                 await safePost(sock, voterId, `✅ Seu voto foi salvo: *SIM* na pauta ${target.title}.`);
               } catch (e) {
@@ -377,13 +401,18 @@ export default function registerMessageHandlers(sock) {
                 const res = await recordUserVoteOnce(voterId, target.id, xp);
                 if (res.awarded && res.newLevel > res.oldLevel) {
                   const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
-                  await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                  try {
+                    await safePost(sock, voterId, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                    await safePost(sock, group.id, `${em} ${sender}, confira sua DM.`);
+                  } catch (e) {
+                    await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                  }
                 }
               } catch (e) {
                 logger.debug({ e, voterId, targetId: target.id }, 'award xp failed');
               }
-              await safePost(sock, group.id, `❌ ${sender} votou *NÃO* na pauta ${target.title}.`);
-              // private confirmation
+              // short group hint and detailed private confirmation
+              await safePost(sock, group.id, `❌ ${sender}, seu voto foi registrado — confira sua DM.`);
               try {
                 await safePost(sock, voterId, `❌ Seu voto foi salvo: *NÃO* na pauta ${target.title}.`);
               } catch (e) {
@@ -460,14 +489,19 @@ export default function registerMessageHandlers(sock) {
                 try {
                   const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                   const res = await recordUserVoteOnce(voterId, target.id, xp);
-                  if (res.awarded && res.newLevel > res.oldLevel) {
-                    const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
-                    await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
-                  }
+                    if (res.awarded && res.newLevel > res.oldLevel) {
+                      const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
+                      try {
+                        await safePost(sock, voterId, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                        await safePost(sock, group.id, `${em} ${sender}, confira sua DM.`);
+                      } catch (e) {
+                        await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                      }
+                    }
                 } catch (e) {
                   logger.debug({ e, voterId, targetId: target.id }, 'award xp failed');
                 }
-                await safePost(sock, group.id, `✅ ${sender} votou *SIM* na pauta ${target.title}.`);
+                await safePost(sock, group.id, `✅ ${sender}, seu voto foi registrado — confira sua DM.`);
                 try {
                   await safePost(sock, voterId, `✅ Seu voto foi salvo: *SIM* na pauta ${target.title}.`);
                 } catch (e) {
@@ -483,14 +517,19 @@ export default function registerMessageHandlers(sock) {
                 try {
                   const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                   const res = await recordUserVoteOnce(voterId, target.id, xp);
-                  if (res.awarded && res.newLevel > res.oldLevel) {
-                    const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
-                    await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
-                  }
+                    if (res.awarded && res.newLevel > res.oldLevel) {
+                      const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
+                      try {
+                        await safePost(sock, voterId, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                        await safePost(sock, group.id, `${em} ${sender}, confira sua DM.`);
+                      } catch (e) {
+                        await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                      }
+                    }
                 } catch (e) {
                   logger.debug({ e, voterId, targetId: target.id }, 'award xp failed');
                 }
-                await safePost(sock, group.id, `❌ ${sender} votou *NÃO* na pauta ${target.title}.`);
+                await safePost(sock, group.id, `❌ ${sender}, seu voto foi registrado — confira sua DM.`);
                 try {
                   await safePost(sock, voterId, `❌ Seu voto foi salvo: *NÃO* na pauta ${target.title}.`);
                 } catch (e) {
@@ -527,12 +566,18 @@ export default function registerMessageHandlers(sock) {
                       const res = await recordUserVoteOnce(voterId, target.id, xp);
                       if (res.awarded && res.newLevel > res.oldLevel) {
                         const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
-                        await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                        try {
+                          await safePost(sock, voterId, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                          await safePost(sock, group.id, `${em} ${sender}, confira sua DM.`);
+                        } catch (e) {
+                          await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                        }
                       }
                     } catch (e) {
                       logger.debug({ e, voterId, targetId: target.id }, 'award xp failed');
                     }
-                    await safePost(sock, group.id, `🛡️ ${sender} enviou a figurinha do Conselho — sem voto prévio detectado: registrei *SIM* e travei seu voto na pauta ${target.title}.`);
+                    // hint in group, detailed in DM
+                    await safePost(sock, group.id, `🛡️ ${sender}, seu voto foi registrado e travado — confira sua DM.`);
                     try {
                       await safePost(sock, voterId, `🛡️ Você não tinha voto anterior; registrei *SIM* e travei seu voto na pauta ${target.title}.`);
                     } catch (e) {
@@ -548,7 +593,7 @@ export default function registerMessageHandlers(sock) {
                   } catch (e) {
                     logger.debug({ e, voterId }, 'ensure user failed');
                   }
-                  await safePost(sock, group.id, `🛡️ ${sender} travou seu voto (${prior === 'yes' ? 'SIM' : 'NÃO'}) na pauta ${target.title} com a figurinha do Conselho.`);
+                  await safePost(sock, group.id, `🛡️ ${sender}, seu voto foi travado — confira sua DM.`);
                   try {
                     await safePost(sock, voterId, `🛡️ Seu voto foi travado na pauta ${target.title}: *${prior === 'yes' ? 'SIM' : 'NÃO'}*.`);
                   } catch (e) {
@@ -566,12 +611,18 @@ export default function registerMessageHandlers(sock) {
                         const res = await recordUserVoteOnce(voterId, target.id, xp);
                         if (res.awarded && res.newLevel > res.oldLevel) {
                           const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
-                          await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                          try {
+                            await safePost(sock, voterId, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                            await safePost(sock, group.id, `${em} ${sender}, confira sua DM.`);
+                          } catch (e) {
+                            await safePost(sock, group.id, `${em} Parabéns ${sender}! Você subiu para o nível ${res.newLevel} (XP: ${res.newXp})`);
+                          }
                         }
                       } catch (e) {
                         logger.debug({ e, voterId, targetId: target.id }, 'award xp failed');
                       }
-                  await safePost(sock, group.id, `${match === 'yes' ? '✅' : '❌'} ${sender} votou (${match === 'yes' ? 'SIM' : 'NÃO'}) na pauta ${target.title} via figurinha.`);
+                  // concise group hint and DM confirmation
+                  await safePost(sock, group.id, `${match === 'yes' ? '✅' : '❌'} ${sender}, seu voto foi registrado — confira sua DM.`);
                   try {
                     await safePost(sock, voterId, `${match === 'yes' ? '✅' : '❌'} Seu voto foi salvo: *${match === 'yes' ? 'SIM' : 'NÃO'}* na pauta ${target.title}.`);
                   } catch (e) {
