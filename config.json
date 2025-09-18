@@ -1,0 +1,23 @@
+{
+  "groupName": "O Conselho",
+  "groupJid": "120363421541178635@g.us",
+  "voteWindowHours": 24,
+  "quorumRule": "half",
+  "tokens": {
+    "yes": ["sim", "a favor", "✅", "👍"],
+    "no": ["nao", "não", "contra", "❌", "👎"]
+  },
+  "stickers": {
+    "yes": ["md5hash_da_sticker_sim"],
+    "no": ["md5hash_da_sticker_nao"],
+    "council": ["42,112,26,41,66,156,96,148,99,23,255,249,2,48,99,248,106,238,174,213,237,130,185,52,172,155,143,245,130,83,116,250"]
+  },
+  "authDir": "./auth-business",
+  "insecureTls": true,
+  "xpPerVote": 25,
+  "xpScaling": {
+    "k": 6,
+    "minMult": 0.25,
+    "maxMult": 3.0
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "groupJid": "5516988409523-1510094323@g.us",
+  "groupName": "My Council Group (optional if using groupJid)",
+  "voteWindowHours": 24,
+  "authDir": "./auth-bot",
+  "quorum": {
+    "type": "percentage",
+    "threshold": 0.5
+  },
+  "stickers": {
+    "yes": ["<hex-file-sha256-of-yes-sticker>"] ,
+    "no": ["<hex-file-sha256-of-no-sticker>"],
+    "council": ["<hex-file-sha256-of-council-sticker>"]
+  }
+  ,"insecureTls": false
+  ,
+  "xpPerVote": 10,
+  "xpScaling": {
+    "k": 6,
+    "minMult": 0.25,
+    "maxMult": 3.0
+  }
+}
