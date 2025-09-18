@@ -159,15 +159,15 @@ export default function registerMessageHandlers(sock) {
           continue;
         }
 
-        // --- Debug: reannounce a proposal by id: !reannounce <id>
+        // --- Debug: reabrir a proposal by id: !reabrir <id>
         // Useful to re-send the formatted proposal text without creating a new one.
-        if (ntext.startsWith('!reannounce')) {
+        if (ntext.startsWith('!reabrir')) {
           const [, rawId] = ntext.split(' ');
           const target = rawId
             ? db.data.proposals.find((p) => p.id === rawId && p.groupJid === group.id)
             : (db.data.proposals || []).filter((p) => p.groupJid === group.id && p.status === 'open').slice(-1)[0];
           if (!target) {
-            await safePost(sock, group.id, 'ℹ️ Pauta não encontrada para reannounciar. Use: !reannounce <id>');
+            await safePost(sock, group.id, 'ℹ️ Pauta não encontrada para reannounciar. Use: !reabrir <id>');
             continue;
           }
           const left = helpers.humanTimeLeft(target.deadlineISO);
@@ -241,46 +241,34 @@ export default function registerMessageHandlers(sock) {
         // --- Ranking: !ranking
         if (ntext === '!ranking') {
           const all = listUsers();
+          // Only include users who have an explicit saved name in the DB
           const arr = Object.entries(all || {})
-            .map(([jid, data]) => ({ jid, xp: data.xp || 0, votesCount: data.votesCount || 0 }))
+            .filter(([jid, data]) => data && data.name)
+            .map(([jid, data]) => ({ jid, xp: data.xp || 0, votesCount: data.votesCount || 0, name: data.name }))
             .sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp)
             .slice(0, 10);
+
           if (arr.length === 0) {
-            await safePost(sock, group.id, 'ℹ️ Nenhum voto registrado ainda.');
+            await safePost(sock, group.id, 'ℹ️ Nenhum voto registrado com nome salvo ainda.');
             continue;
           }
-          // fetch group metadata once to resolve display names
-          let members = [];
-          try {
-            members = (await sock.groupMetadata(group.id)).participants || [];
-          } catch (e) {
-            members = [];
-          }
 
-          const lines = await Promise.all(
-            arr.map(async (row, i) => {
-              // resolve a friendly name if present
-              let name = row.jid;
-              try {
-                const member = members.find((p) => p.id === row.jid);
-                if (member) name = member?.displayName || member?.pushname || row.jid;
-              } catch (e) {
-                /* ignore */
-              }
+          // compute max XP for percentage display (avoid divide by zero)
+          const maxXp = Math.max(...arr.map((r) => r.xp || 0), 1);
 
-              const lvl = levelFromXp(row.xp || 0);
-              const title = titleForLevel(lvl.level);
-              const badge = helpers.badgeForLevel(lvl.level);
-              const praise = helpers.pickRandom(helpers.EMOJI_POOLS.praise);
-              const extra = helpers.pickRandom(helpers.EMOJI_POOLS.confirm) + helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
-              const bar = helpers.progressBar(lvl.xpIntoLevel, lvl.xpForNextLevel, 12);
+          const lines = arr.map((row, i) => {
+            const name = row.name;
+            const lvl = levelFromXp(row.xp || 0);
+            const title = titleForLevel(lvl.level);
+            const badge = helpers.badgeForLevel(lvl.level);
+            const bar = helpers.progressBar(lvl.xpIntoLevel, lvl.xpForNextLevel, 12);
+            const pct = Math.round(((row.xp || 0) / maxXp) * 100);
+            const firstLine = `${i + 1}) 🟢 ${name} ✨`;
+            const voteIcons = row.votesCount >= 3 ? '✅🏆' : row.votesCount === 2 ? '✅🚀' : '👍🚀';
+            const secondLine = `   Votos: ${row.votesCount} ${voteIcons} • Nível ${lvl.level} (${title}) • XP: ${row.xp} ${bar} ${pct}%`;
+            return `${firstLine}\n${secondLine}`;
+          });
 
-              // Two-line entry per user
-              const firstLine = `${i + 1}) ${badge} ${name} ${praise}`;
-              const secondLine = `   Votos: ${row.votesCount} ${extra} • Nível ${lvl.level} (${title}) • XP: ${row.xp} ${bar}`;
-              return `${firstLine}\n${secondLine}`;
-            })
-          );
           await safePost(sock, group.id, `🏆 Ranking de votações:\n${lines.join('\n\n')}`);
           continue;
         }
@@ -384,6 +372,14 @@ export default function registerMessageHandlers(sock) {
               try {
                 const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                 const res = await recordUserVoteOnce(voterId, target.id, xp);
+                  // Persist the voter's current display name into the DB so ranking can show names
+                  try {
+                    ensureUser(voterId);
+                    db.data.users[voterId].name = sender;
+                    await db.write();
+                  } catch (e) {
+                    logger.debug({ e, voterId, sender }, 'failed to persist voter name');
+                  }
                 if (res.awarded && res.newLevel > res.oldLevel) {
                   const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
                   // send detailed level-up in DM and a short hint in the group
@@ -416,6 +412,13 @@ export default function registerMessageHandlers(sock) {
               try {
                 const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                 const res = await recordUserVoteOnce(voterId, target.id, xp);
+                  try {
+                    ensureUser(voterId);
+                    db.data.users[voterId].name = sender;
+                    await db.write();
+                  } catch (e) {
+                    logger.debug({ e, voterId, sender }, 'failed to persist voter name');
+                  }
                 if (res.awarded && res.newLevel > res.oldLevel) {
                   const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
                   try {
@@ -506,6 +509,13 @@ export default function registerMessageHandlers(sock) {
                 try {
                   const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                   const res = await recordUserVoteOnce(voterId, target.id, xp);
+                  try {
+                    ensureUser(voterId);
+                    db.data.users[voterId].name = sender;
+                    await db.write();
+                  } catch (e) {
+                    logger.debug({ e, voterId, sender }, 'failed to persist voter name');
+                  }
                     if (res.awarded && res.newLevel > res.oldLevel) {
                       const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
                       try {
@@ -581,6 +591,13 @@ export default function registerMessageHandlers(sock) {
                     try {
                       const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                       const res = await recordUserVoteOnce(voterId, target.id, xp);
+                      try {
+                        ensureUser(voterId);
+                        db.data.users[voterId].name = sender;
+                        await db.write();
+                      } catch (e) {
+                        logger.debug({ e, voterId, sender }, 'failed to persist voter name');
+                      }
                       if (res.awarded && res.newLevel > res.oldLevel) {
                         const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
                         try {
@@ -626,6 +643,13 @@ export default function registerMessageHandlers(sock) {
                       try {
                         const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                         const res = await recordUserVoteOnce(voterId, target.id, xp);
+                          try {
+                            ensureUser(voterId);
+                            db.data.users[voterId].name = sender;
+                            await db.write();
+                          } catch (e) {
+                            logger.debug({ e, voterId, sender }, 'failed to persist voter name');
+                          }
                         if (res.awarded && res.newLevel > res.oldLevel) {
                           const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
                           try {
