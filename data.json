@@ -6,7 +6,7 @@
       "openedBy": "PH",
       "groupJid": "120363421541178635@g.us",
       "openedAtISO": "2025-09-18T21:19:29.224Z",
-      "deadlineISO": "2025-09-21T21:19:29.224Z",
+      "deadlineISO": "2025-09-19T21:19:29.224Z",
       "votes": {
         "5516996152585@s.whatsapp.net": {
           "vote": "yes",
@@ -37,7 +37,8 @@
       "votedProposals": {
         "nPbwt": true
       },
-      "lastSeenISO": "2025-09-18T21:20:00.801Z"
+      "lastSeenISO": "2025-09-19T01:14:01.829Z",
+      "name": "Simas Turbo"
     },
     "5516997910947@s.whatsapp.net": {
       "xp": 6,
@@ -53,7 +54,8 @@
       "votedProposals": {
         "nPbwt": true
       },
-      "lastSeenISO": "2025-09-18T21:24:47.556Z"
+      "lastSeenISO": "2025-09-19T01:13:53.599Z",
+      "name": "Chu Passeios"
     },
     "5516996221745@s.whatsapp.net": {
       "xp": 6,
@@ -62,6 +64,12 @@
         "nPbwt": true
       },
       "lastSeenISO": "2025-09-18T21:26:51.518Z"
+    },
+    "120363421541178635@g.us": {
+      "xp": 0,
+      "votesCount": 0,
+      "votedProposals": {},
+      "lastSeenISO": "2025-09-19T01:13:47.611Z"
     }
   }
 }

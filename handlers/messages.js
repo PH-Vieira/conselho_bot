@@ -8,11 +8,30 @@ import fs from 'fs';
 const fsp = fs.promises;
 import { safePost as importedSafePost } from '../lib/messaging.js';
 import { nanoid } from 'nanoid';
+// Command modules
+import pautaCmd from './commands/pauta.js';
+import meCmd from './commands/me.js';
+import rankingCmd from './commands/ranking.js';
+import setnomeCmd from './commands/setnome.js';
+import helpCmd from './commands/help.js';
+import dumpUsersCmd from './commands/dump-users.js';
+import resyncNamesCmd from './commands/resync-names.js';
+import fetchContactsCmd from './commands/fetch-contacts.js';
+import dedupeUsersCmd from './commands/dedupe-users.js';
+// more command modules can be added here
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
 export default function registerMessageHandlers(sock) {
   // Helper functions to persist short-lived pending selections in DB
   const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+  /**
+   * Remove expired pending selection entries from `db.data.pendingSelections`.
+   * Entries are lightweight mappings used to present a short list of choices
+   * (for example when multiple proposals match a fuzzy `!votar` query).
+   * This function mutates `db.data.pendingSelections` in-memory and does not
+   * write to disk; callers should call `db.write()` if persistent changes are
+   * required after updates elsewhere.
+   */
   function cleanupPendingSelections() {
     const now = new Date().toISOString();
     const obj = db.data.pendingSelections || {};
@@ -21,12 +40,22 @@ export default function registerMessageHandlers(sock) {
     }
     db.data.pendingSelections = obj;
   }
+  /**
+   * Store a temporary selection list for `voterId` that expires after
+   * `PENDING_TTL_MS`. The stored object includes `list` (array of proposal ids)
+   * and an `expiresAtISO` timestamp. Returns the promise from `db.write()`.
+   */
   function setPendingSelection(voterId, list) {
     const expiresAtISO = new Date(Date.now() + PENDING_TTL_MS).toISOString();
     db.data.pendingSelections = db.data.pendingSelections || {};
     db.data.pendingSelections[voterId] = { list, expiresAtISO };
     return db.write();
   }
+  /**
+   * Retrieve the active pending selection list for `voterId` or `null` if
+   * none exists or the entry expired. Calling this will first cleanup expired
+   * entries.
+   */
   function getPendingSelection(voterId) {
     cleanupPendingSelections();
     const obj = db.data.pendingSelections || {};
@@ -38,6 +67,13 @@ export default function registerMessageHandlers(sock) {
     for (const msg of messages) {
       logger.debug({ msgKey: msg.key, message: msg.message }, 'messages.upsert received');
       try {
+        /**
+         * Normalize/unwrap incoming message envelopes.
+         * Baileys may wrap actual content inside `ephemeralMessage` or
+         * `viewOnceMessage` envelopes (and occasionally nested `.message`),
+         * so this helper returns the innermost payload the handlers expect to
+         * inspect (text, stickerMessage, etc.).
+         */
         function unwrapMessage(message) {
           let m = message || {};
           if (m.ephemeralMessage && m.ephemeralMessage.message) m = m.ephemeralMessage.message;
@@ -53,7 +89,12 @@ export default function registerMessageHandlers(sock) {
         const isGroup = remoteJid?.endsWith('@g.us');
         let group = null;
         const isDm = !isGroup;
-        // helper to ensure we have a configured group when a command requires group context
+        /**
+         * Ensure `group` is populated with the configured group metadata.
+         * This is used when a command is invoked via DM but needs group
+         * context (for example `!ranking` or `!votar`). Returns `true` when
+         * `group` is available and `false` otherwise.
+         */
         async function requireGroupContext() {
           if (group && group.id && group.id.endsWith('@g.us')) return true;
           if (CONFIG.groupJid) {
@@ -90,12 +131,26 @@ export default function registerMessageHandlers(sock) {
 
         const sender = msg.pushName || jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
         const dmReplyTo = msg.key.remoteJid || jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
+        /**
+         * Convenience helper for command handlers to reply to the correct
+         * destination. If the incoming message was a DM, replies go back to
+         * the DM sender; otherwise replies go to the `targetId` (usually the
+         * group id).
+         */
         function sendReply(targetId, text) {
           const to = isDm ? dmReplyTo : targetId;
           return safePost(sock, to, text);
         }
-        // Wrap the imported safePost so existing calls that target the group
-        // will be routed to the DM when the original message was a DM.
+
+        /**
+         * Local wrapper around the imported `safePost` sender which rewrites
+         * calls that would otherwise target the group to instead target the
+         * DM when the original message was a private chat. This preserves
+         * backward compatibility with existing code that calls
+         * `safePost(sock, group.id, ...)` while enabling DM-friendly
+         * responses. The wrapper delegates to the aliased imported function
+         * `_origSafePost` to avoid accidental recursion.
+         */
         const _origSafePost = importedSafePost;
         function safePost(sockArg, to, text) {
           const toId = (isDm && to === group.id) ? dmReplyTo : to;
@@ -104,9 +159,13 @@ export default function registerMessageHandlers(sock) {
         const text = m?.conversation || m?.extendedTextMessage?.text || '';
         const ntext = helpers.normalizeText(text);
 
-        // Persist any group sender into the DB so ranking and other features
-        // have a user entry even if they never used a command. This runs for
-        // messages coming from the configured group (or the matched group).
+  /**
+   * Persist any group sender into the DB so ranking and other features
+   * have a user entry even if the participant never used a bot command.
+   * This block runs for messages coming from the configured group (or
+   * the matched group) and updates `lastSeenISO` plus attempts to
+   * resolve and persist a display name via `userUtils`.
+   */
         try {
           if (isGroup) {
             // determine sender JID (participant in groups, or remoteJid for legacy)
@@ -144,94 +203,37 @@ export default function registerMessageHandlers(sock) {
           logger.debug({ e }, 'persist command user failed');
         }
 
-        // 1) Criar pauta: !pauta <título>
-        if (ntext.startsWith('!pauta ')) {
-            if (isDm) {
-              const ok = await requireGroupContext();
-              if (!ok) {
-                await sendReply(group.id, 'ℹ️ Este comando só funciona em grupo. Ou inicie uma DM com o bot para usar comandos pessoais como !setnome ou configure `groupJid` para permitir uso via DM.');
-                continue;
-              }
-            }
-          // Support optional time specifiers. Examples:
-          //  !pauta Título
-          //  !pauta Título | 48h
-          //  !pauta Título | 30m
-          //  !pauta Título 48
-          const rest = text.slice(7).trim();
-          if (!rest) {
-            await sendReply(group.id, '❗ Use: !pauta <título da pauta> [<tempo>]');
-            continue;
+  // Command dispatch
+  // First, try per-command handlers (modules under handlers/commands).
+  // Each handler receives a `cmdCtx` object and should return `true`
+  // when it handled the message (to short-circuit further processing).
+  // This keeps the legacy inline handlers as a fallback but allows
+  // cleaner separation of command logic.
+        const cmdCtx = { msg, m, text, ntext, isGroup, isDm, group, sock, db, logger, helpers, CONFIG, sender, sendReply, ensureUser, recordUserVoteOnce, listUsers, userUtils, jidNormalizedUser, nanoid, levelFromXp, titleForLevel };
+        const commandHandlers = [
+          pautaCmd,
+          meCmd,
+          rankingCmd,
+          setnomeCmd,
+          helpCmd,
+          dumpUsersCmd,
+          resyncNamesCmd,
+          fetchContactsCmd,
+          dedupeUsersCmd,
+        ];
+        let handledAny = false;
+        for (const h of commandHandlers) {
+          try {
+            const handled = await h(cmdCtx);
+            if (handled) { handledAny = true; break; }
+          } catch (e) {
+            logger.debug({ e }, 'command handler error');
           }
-
-          // try to split title and optional time token using '|' or ';' or ' - '
-          let title = rest;
-          let timeToken = null;
-          const parts = rest.split(/\||;|\s-\s/).map((s) => s.trim()).filter(Boolean);
-          if (parts.length > 1) {
-            title = parts.slice(0, -1).join(' | ');
-            timeToken = parts[parts.length - 1];
-          } else {
-            // maybe space-separated trailing token like "Title 48h" or "Title 30m"
-            const spaceParts = rest.split(/\s+/);
-            const last = spaceParts[spaceParts.length - 1];
-            // accept trailing tokens like 30m, 48h, or bracketed [30m] or (30m)
-            if (/^\[?\(?\d+(h|m)?\)?\]?$/i.test(last)) {
-              timeToken = last;
-              title = spaceParts.slice(0, -1).join(' ');
-            }
-          }
-
-          const id = nanoid(5);
-          const openedAtISO = new Date().toISOString();
-          let deadlineISO;
-          if (timeToken) {
-            // strip optional surrounding brackets/parentheses like [30m] or (30m)
-            timeToken = timeToken.replace(/^[\[\(]+|[\]\)]+$/g, '');
-            // remove trailing punctuation like commas or dots
-            timeToken = timeToken.replace(/[.,\s]+$/g, '');
-            // accept units: h, hr, hours, m, min, minutes
-            const m = timeToken.match(/^(\d+)(h|hr|hours|m|min|minutes)?$/i);
-            if (m) {
-              const num = Number(m[1]);
-              const unitToken = (m[2] || 'h').toLowerCase();
-              const isMinutes = ['m', 'min', 'minutes'].includes(unitToken);
-              if (isMinutes) {
-                deadlineISO = helpers.computeDeadlineFromMinutes(openedAtISO, num);
-              } else {
-                // treat as hours
-                deadlineISO = helpers.computeDeadline(openedAtISO, num);
-              }
-            } else {
-              // fallback to default
-              deadlineISO = helpers.computeDeadline(openedAtISO, CONFIG.voteWindowHours || 24);
-            }
-          } else {
-            deadlineISO = helpers.computeDeadline(openedAtISO, CONFIG.voteWindowHours || 24);
-          }
-          db.data.proposals.push({
-            id,
-            title,
-            openedBy: sender,
-            groupJid: group.id,
-            openedAtISO,
-            deadlineISO,
-            votes: {},
-            status: 'open'
-          });
-          await db.write();
-          await sendReply(group.id, `✅ Pauta criada: *${title}* (id: ${id}). Use !votar ${id} sim/nao para votar.`);
-          continue;
-          const { yes, no } = helpers.summarizeVotes(target.votes);
-          const left = helpers.humanTimeLeft(target.deadlineISO);
-          const fmt = helpers.formatToUTCMinus3(target.deadlineISO);
-          await safePost(
-            sock,
-            group.id,
-            `📊 Pauta *${target.title}*: ✅ ${yes} | ❌ ${no} • Tempo restante: ${left} (até ${fmt})`
-          );
-          continue;
         }
+        if (handledAny) continue;
+
+        // Command handled by modular handlers (pauta)
+        // ...legacy inline implementation removed; see handlers/commands/pauta.js
 
         // --- Debug: reabrir a proposal by id: !reabrir <id>
         // Useful to re-send the formatted proposal text without creating a new one.
@@ -254,24 +256,7 @@ export default function registerMessageHandlers(sock) {
           continue;
         }
 
-        // 3) Listar pautas: !pautas
-        if (ntext === '!pautas') {
-            if (isDm) {
-              const ok = await requireGroupContext();
-              if (!ok) { await sendReply(group.id, 'ℹ️ Este comando precisa do contexto do grupo.'); continue; }
-            }
-          const list = (db.data.proposals || [])
-            .filter((p) => p.groupJid === group.id)
-            .slice(-10)
-            .map((p) => {
-              const left = helpers.humanTimeLeft(p.deadlineISO);
-              const fmt = helpers.formatToUTCMinus3(p.deadlineISO);
-              return `${p.title} (${p.status}) — Prazo: ${left} (até ${fmt})`;
-            })
-            .join('\n');
-          await sendReply(group.id, list || 'ℹ️ Sem pautas registradas.');
-          continue;
-        }
+        // Command handled by modular handlers (pautas)
 
         // 4) Ajuda: !help (resumido)
         if (ntext === '!help') {
