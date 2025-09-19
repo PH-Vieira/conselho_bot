@@ -418,6 +418,8 @@ export default function registerMessageHandlers(sock) {
 
         // --- Ranking: !ranking
         if (ntext === '!ranking') {
+          // Ensure we have the latest DB contents (pick up recent !setnome writes)
+          try { await db.read(); } catch (e) { logger.debug({ e }, 'db.read failed in ranking'); }
           // Seed users map from DB (so everyone in data.json appears)
           const usersMap = {};
           const dbUsers = listUsers() || {};
@@ -437,6 +439,11 @@ export default function registerMessageHandlers(sock) {
             for (const voterJid of Object.keys(p.votes || {})) {
               const norm = jidNormalizedUser(voterJid);
               if (!usersMap[norm]) usersMap[norm] = { jid: norm, name: null, xp: 0, votesCount: 0 };
+              // if DB has a name for this normalized jid, prefer it
+              if ((!usersMap[norm].name || usersMap[norm].name === null) && dbUsers && dbUsers[norm] && dbUsers[norm].name) {
+                usersMap[norm].name = dbUsers[norm].name;
+                usersMap[norm].xp = Number(dbUsers[norm].xp || 0);
+              }
               usersMap[norm].votesCount = (usersMap[norm].votesCount || 0) + 1;
             }
           }
