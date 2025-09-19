@@ -418,8 +418,20 @@ export default function registerMessageHandlers(sock) {
 
         // --- Ranking: !ranking
         if (ntext === '!ranking') {
-          // Build a map of voters by scanning proposals (single source of truth for votes)
+          // Seed users map from DB (so everyone in data.json appears)
           const usersMap = {};
+          const dbUsers = listUsers() || {};
+          for (const [jid, data] of Object.entries(dbUsers)) {
+            const norm = jidNormalizedUser(jid);
+            usersMap[norm] = {
+              jid: norm,
+              name: data.name || null,
+              xp: Number(data.xp || 0),
+              votesCount: Number(data.votesCount || 0) || 0,
+            };
+          }
+
+          // Overlay votes counts by scanning proposals (single source for votes)
           for (const p of db.data.proposals || []) {
             if (p.groupJid !== group.id) continue;
             for (const voterJid of Object.keys(p.votes || {})) {
@@ -429,70 +441,46 @@ export default function registerMessageHandlers(sock) {
             }
           }
 
-          // Enrich from DB users (xp, name) without changing votesCount computed above
-          const dbUsers = listUsers() || {};
-          for (const [jid, data] of Object.entries(dbUsers)) {
-            const norm = jidNormalizedUser(jid);
-            if (!usersMap[norm]) {
-              // include users with zero recorded votes? skip to keep ranking to voters only
-              continue;
-            }
-            usersMap[norm].xp = Number(data.xp || 0);
-            if (data.name) usersMap[norm].name = data.name;
-          }
-
-          // If after scanning we have no users, respond helpfully
           const allRows = Object.values(usersMap || {});
-          if (!allRows || allRows.length === 0) { 
-            await safePost(sock, group.id, 'ℹ️ Nenhum voto registrado com nome salvo ainda.');
+          if (!allRows || allRows.length === 0) {
+            await safePost(sock, group.id, 'ℹ️ Nenhum usuário registrado ainda.');
             continue;
           }
 
-          // Enrich name fallback: try DB name, then group metadata, then socket contacts, then JID local part
+          // Enrich display name with fallbacks: DB name -> group metadata -> sock.getName -> sock.contacts -> JID local part
           const resolvedRows = [];
           for (const r of allRows) {
             let display = r.name || null;
-            // try group participants metadata
             try {
               const part = (group && group.participants) ? (group.participants.find((p) => p.id === r.jid) || null) : null;
-              if (!display && part) {
-                // different Baileys versions use different fields
-                display = part?.name || part?.notify || part?.pushname || null;
-              }
-            } catch (e) {
-              // ignore
-            }
+              if (!display && part) display = part?.name || part?.notify || part?.pushname || null;
+            } catch (e) {}
 
-            // try sock contact lookup if available
             if (!display) {
               try {
                 if (typeof sock.getName === 'function') {
                   const n = await sock.getName(r.jid).catch(() => null);
                   if (n) display = n;
                 }
-                // some environments expose contacts map
                 if (!display && sock.contacts && sock.contacts[r.jid]) {
                   const c = sock.contacts[r.jid];
                   display = c.name || c.notify || c.vname || null;
                 }
-              } catch (e) {
-                // ignore
-              }
+              } catch (e) {}
             }
 
             if (!display) display = r.jid ? r.jid.split('@')[0] : 'Unknown';
             resolvedRows.push({ jid: r.jid, name: display, xp: Number(r.xp || 0), votesCount: Number(r.votesCount || 0) });
           }
 
-          const rows = resolvedRows.sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp).slice(0, 10);
+          const rows = resolvedRows.sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp).slice(0, 50);
           const maxXp = Math.max(...rows.map((r) => r.xp || 0), 1);
 
-          const lines = rows.map((row, i) => { 
+          const lines = rows.map((row, i) => {
             const lvl = levelFromXp(row.xp || 0);
             const title = titleForLevel(lvl.level);
             const badge = helpers.badgeForLevel(lvl.level);
             const bar = helpers.progressBar(lvl.xpIntoLevel, lvl.xpForNextLevel, 12);
-            const pct = Math.round(((row.xp || 0) / maxXp) * 100);
             const firstLine = `${i + 1}) ${badge} ${row.name} ✨`;
             const voteIcons = row.votesCount >= 3 ? '✅🏆' : row.votesCount === 2 ? '✅🚀' : '👍🚀';
             const secondLine = `   Votos: ${row.votesCount} ${voteIcons} • Nível ${lvl.level} (${title}) • XP: ${row.xp} ${bar}`;
