@@ -288,37 +288,33 @@ export default function registerMessageHandlers(sock) {
 
         // --- Ranking: !ranking
         if (ntext === '!ranking') {
-          // Build a map of users combining saved DB users and any JIDs that appear in proposal votes
+          // Build a map of voters by scanning proposals (single source of truth for votes)
           const usersMap = {};
-
-          // 1) seed from db.data.users
-          const dbUsers = listUsers() || {};
-          for (const [jid, data] of Object.entries(dbUsers)) {
-            usersMap[jid] = {
-              jid,
-              name: data.name || null,
-              xp: Number(data.xp || 0),
-              votesCount: Number(data.votesCount || 0),
-            };
-          }
-
-          // 2) scan proposals for voters and merge missing entries
           for (const p of db.data.proposals || []) {
             if (p.groupJid !== group.id) continue;
             for (const voterJid of Object.keys(p.votes || {})) {
-              const norm = voterJid;
-              if (!usersMap[norm]) {
-                usersMap[norm] = { jid: norm, name: null, xp: 0, votesCount: 0 };
-              }
-              // count votes per proposal (some code stores objects with vote/final)
+              const norm = jidNormalizedUser(voterJid);
+              if (!usersMap[norm]) usersMap[norm] = { jid: norm, name: null, xp: 0, votesCount: 0 };
               usersMap[norm].votesCount = (usersMap[norm].votesCount || 0) + 1;
             }
           }
 
+          // Enrich from DB users (xp, name) without changing votesCount computed above
+          const dbUsers = listUsers() || {};
+          for (const [jid, data] of Object.entries(dbUsers)) {
+            const norm = jidNormalizedUser(jid);
+            if (!usersMap[norm]) {
+              // include users with zero recorded votes? skip to keep ranking to voters only
+              continue;
+            }
+            usersMap[norm].xp = Number(data.xp || 0);
+            if (data.name) usersMap[norm].name = data.name;
+          }
+
           // If after scanning we have no users, respond helpfully
           const allRows = Object.values(usersMap || {});
-          if (!allRows || allRows.length === 0) {
-            await safePost(sock, group.id, 'ℹ️ Nenhum voto registrado ainda.');
+          if (!allRows || allRows.length === 0) { 
+            await safePost(sock, group.id, 'ℹ️ Nenhum voto registrado com nome salvo ainda.');
             continue;
           }
 
@@ -361,7 +357,7 @@ export default function registerMessageHandlers(sock) {
           const rows = resolvedRows.sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp).slice(0, 10);
           const maxXp = Math.max(...rows.map((r) => r.xp || 0), 1);
 
-          const lines = rows.map((row, i) => {
+          const lines = rows.map((row, i) => { 
             const lvl = levelFromXp(row.xp || 0);
             const title = titleForLevel(lvl.level);
             const badge = helpers.badgeForLevel(lvl.level);
@@ -373,7 +369,7 @@ export default function registerMessageHandlers(sock) {
             return `${firstLine}\n${secondLine}`;
           });
 
-          await safePost(sock, group.id, `🏆 Ranking de votações:\n${lines.join('\n\n')}`);
+          await safePost(sock, group.id, `🏆 Ranking de Participação:\n${lines.join('\n\n')}`);
           continue;
         }
 
