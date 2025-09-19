@@ -84,11 +84,16 @@ export default function registerMessageHandlers(sock) {
           }
         } else {
           // Private chat (DM) — create a minimal placeholder so handlers can reply using group.id
-          const privateId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
+          const privateId = msg.key.remoteJid || jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
           group = { id: privateId, participants: [] };
         }
 
         const sender = msg.pushName || jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
+        const dmReplyTo = msg.key.remoteJid || jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
+        function sendReply(targetId, text) {
+          const to = isDm ? dmReplyTo : targetId;
+          return safePost(sock, to, text);
+        }
         const text = m?.conversation || m?.extendedTextMessage?.text || '';
         const ntext = helpers.normalizeText(text);
 
