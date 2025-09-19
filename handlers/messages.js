@@ -18,6 +18,8 @@ import dumpUsersCmd from './commands/dump-users.js';
 import resyncNamesCmd from './commands/resync-names.js';
 import fetchContactsCmd from './commands/fetch-contacts.js';
 import dedupeUsersCmd from './commands/dedupe-users.js';
+import contagemCmd from './commands/contagem.js';
+import pautasCmd from './commands/pautas.js';
 // more command modules can be added here
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
@@ -220,6 +222,8 @@ export default function registerMessageHandlers(sock) {
           resyncNamesCmd,
           fetchContactsCmd,
           dedupeUsersCmd,
+          contagemCmd,
+          pautasCmd,
         ];
         let handledAny = false;
         for (const h of commandHandlers) {
