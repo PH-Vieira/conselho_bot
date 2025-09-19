@@ -420,35 +420,60 @@ export default function registerMessageHandlers(sock) {
         if (ntext === '!ranking') {
           // Ensure we have the latest DB contents (pick up recent !setnome writes)
           try { await db.read(); } catch (e) { logger.debug({ e }, 'db.read failed in ranking'); }
-          // Seed users map from DB (so everyone in data.json appears)
+          // Build union of sources: DB users, group participants, socket contacts, and proposal voters
           const usersMap = {};
           const dbUsers = listUsers() || {};
+
+          // Seed from DB (persisted users) - prefer these names and xp
           for (const [jid, data] of Object.entries(dbUsers)) {
             const norm = jidNormalizedUser(jid);
-            usersMap[norm] = {
-              jid: norm,
-              name: data.name || null,
-              xp: Number(data.xp || 0),
-              votesCount: Number(data.votesCount || 0) || 0,
-            };
+            usersMap[norm] = { jid: norm, name: data.name || null, xp: Number(data.xp || 0), votesCount: 0 };
           }
 
-          // Overlay votes counts by scanning proposals (single source for votes)
+          // Add group participants (ensure they appear even if not in DB)
+          try {
+            const parts = (group && group.participants) ? group.participants.map((p) => p.id) : [];
+            for (const pid of parts) {
+              const norm = jidNormalizedUser(pid);
+              if (!usersMap[norm]) usersMap[norm] = { jid: norm, name: null, xp: 0, votesCount: 0 };
+            }
+          } catch (e) { logger.debug({ e }, 'failed to include group participants in ranking seed'); }
+
+          // Add sock.contacts if available
+          try {
+            const contactKeys = sock.contacts ? Object.keys(sock.contacts) : [];
+            for (const k of contactKeys) {
+              const norm = jidNormalizedUser(k);
+              if (!usersMap[norm]) usersMap[norm] = { jid: norm, name: null, xp: 0, votesCount: 0 };
+            }
+          } catch (e) { logger.debug({ e }, 'failed to include sock.contacts in ranking seed'); }
+
+          // Compute votesCount from proposals (authoritative source for votes)
           for (const p of db.data.proposals || []) {
             if (p.groupJid !== group.id) continue;
             for (const voterJid of Object.keys(p.votes || {})) {
               const norm = jidNormalizedUser(voterJid);
               if (!usersMap[norm]) usersMap[norm] = { jid: norm, name: null, xp: 0, votesCount: 0 };
+              usersMap[norm].votesCount = (usersMap[norm].votesCount || 0) + 1;
               // if DB has a name for this normalized jid, prefer it
               if ((!usersMap[norm].name || usersMap[norm].name === null) && dbUsers && dbUsers[norm] && dbUsers[norm].name) {
                 usersMap[norm].name = dbUsers[norm].name;
                 usersMap[norm].xp = Number(dbUsers[norm].xp || 0);
               }
-              usersMap[norm].votesCount = (usersMap[norm].votesCount || 0) + 1;
             }
           }
 
           const allRows = Object.values(usersMap || {});
+          // debug info: counts of seed sources
+          try {
+            const dbCount = Object.keys(dbUsers || {}).length;
+            const partCount = (group && group.participants) ? group.participants.length : 0;
+            const contactCount = sock.contacts ? Object.keys(sock.contacts).length : 0;
+            const votersCount = (db.data.proposals || []).reduce((acc, p) => acc + (p.groupJid === group.id ? Object.keys(p.votes || {}).length : 0), 0);
+            logger.info({ dbCount, partCount, contactCount, votersCount, allRowsCount: allRows.length }, 'ranking seed counts');
+          } catch (e) {
+            logger.debug({ e }, 'ranking debug counts failed');
+          }
           if (!allRows || allRows.length === 0) {
             await safePost(sock, group.id, 'ℹ️ Nenhum usuário registrado ainda.');
             continue;
