@@ -369,7 +369,7 @@ export default function registerMessageHandlers(sock) {
             const pct = Math.round(((row.xp || 0) / maxXp) * 100);
             const firstLine = `${i + 1}) ${badge} ${row.name} ✨`;
             const voteIcons = row.votesCount >= 3 ? '✅🏆' : row.votesCount === 2 ? '✅🚀' : '👍🚀';
-            const secondLine = `   Votos: ${row.votesCount} ${voteIcons} • Nível ${lvl.level} (${title}) • XP: ${row.xp} ${bar} ${pct}%`;
+            const secondLine = `   Votos: ${row.votesCount} ${voteIcons} • Nível ${lvl.level} (${title}) • XP: ${row.xp} ${bar}`;
             return `${firstLine}\n${secondLine}`;
           });
 
