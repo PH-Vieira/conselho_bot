@@ -94,8 +94,38 @@ export default function registerMessageHandlers(sock) {
           const to = isDm ? dmReplyTo : targetId;
           return safePost(sock, to, text);
         }
+        // Wrap the imported safePost so existing calls that target the group
+        // will be routed to the DM when the original message was a DM.
+        const _origSafePost = safePost;
+        function safePost(sockArg, to, text) {
+          const toId = (isDm && to === group.id) ? dmReplyTo : to;
+          return _origSafePost(sockArg, toId, text);
+        }
         const text = m?.conversation || m?.extendedTextMessage?.text || '';
         const ntext = helpers.normalizeText(text);
+
+        // Persist any group sender into the DB so ranking and other features
+        // have a user entry even if they never used a command. This runs for
+        // messages coming from the configured group (or the matched group).
+        try {
+          if (isGroup) {
+            // determine sender JID (participant in groups, or remoteJid for legacy)
+            const senderJid = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
+            // ignore messages coming from the bot itself (some versions expose sock.user)
+            const botJid = (sock && (sock.user?.id || sock.user?.jid)) ? jidNormalizedUser(sock.user.id || sock.user.jid) : null;
+            if (senderJid && senderJid !== botJid) {
+              ensureUser(senderJid);
+              db.data.users[senderJid].lastSeenISO = new Date().toISOString();
+              try {
+                await userUtils.resolveAndPersistName(sock, group, senderJid, msg.pushName || null);
+              } catch (e) {
+                logger.debug({ e, senderJid }, 'resolveAndPersistName failed while persisting group sender');
+              }
+            }
+          }
+        } catch (e) {
+          logger.debug({ e }, 'persist group sender failed');
+        }
 
         // Persist a user entry when they use any bot command (messages starting with '!')
         try {
@@ -119,7 +149,7 @@ export default function registerMessageHandlers(sock) {
             if (isDm) {
               const ok = await requireGroupContext();
               if (!ok) {
-                await safePost(sock, group.id, 'ℹ️ Este comando só funciona em grupo. Ou inicie uma DM com o bot para usar comandos pessoais como !setnome ou configure `groupJid` para permitir uso via DM.');
+                await sendReply(group.id, 'ℹ️ Este comando só funciona em grupo. Ou inicie uma DM com o bot para usar comandos pessoais como !setnome ou configure `groupJid` para permitir uso via DM.');
                 continue;
               }
             }
@@ -130,7 +160,7 @@ export default function registerMessageHandlers(sock) {
           //  !pauta Título 48
           const rest = text.slice(7).trim();
           if (!rest) {
-            await safePost(sock, group.id, '❗ Use: !pauta <título da pauta> [<tempo>]');
+            await sendReply(group.id, '❗ Use: !pauta <título da pauta> [<tempo>]');
             continue;
           }
 
@@ -190,7 +220,7 @@ export default function registerMessageHandlers(sock) {
             status: 'open'
           });
           await db.write();
-          await safePost(sock, group.id, `✅ Pauta criada: *${title}* (id: ${id}). Use !votar ${id} sim/nao para votar.`);
+          await sendReply(group.id, `✅ Pauta criada: *${title}* (id: ${id}). Use !votar ${id} sim/nao para votar.`);
           continue;
           const { yes, no } = helpers.summarizeVotes(target.votes);
           const left = helpers.humanTimeLeft(target.deadlineISO);
@@ -208,19 +238,19 @@ export default function registerMessageHandlers(sock) {
         if (ntext.startsWith('!reabrir')) {
             if (isDm) {
               const ok = await requireGroupContext();
-              if (!ok) { await safePost(sock, group.id, 'ℹ️ Este comando precisa do contexto do grupo.'); continue; }
+              if (!ok) { await sendReply(group.id, 'ℹ️ Este comando precisa do contexto do grupo.'); continue; }
             }
           const [, rawId] = ntext.split(' ');
           const target = rawId
             ? db.data.proposals.find((p) => p.id === rawId && p.groupJid === group.id)
             : (db.data.proposals || []).filter((p) => p.groupJid === group.id && p.status === 'open').slice(-1)[0];
           if (!target) {
-            await safePost(sock, group.id, 'ℹ️ Pauta não encontrada para reannounciar. Use: !reabrir <id>');
+            await sendReply(group.id, 'ℹ️ Pauta não encontrada para reannounciar. Use: !reabrir <id>');
             continue;
           }
           const left = helpers.humanTimeLeft(target.deadlineISO);
           const fmt = helpers.formatToUTCMinus3(target.deadlineISO);
-          await safePost(sock, group.id, `📢 (re)Pauta *${target.title}* aberta por *${target.openedBy}*:\n> ${target.title}\n⏳ Prazo: ${left} (até ${fmt}).`);
+          await sendReply(group.id, `📢 (re)Pauta *${target.title}* aberta por *${target.openedBy}*:\n> ${target.title}\n⏳ Prazo: ${left} (até ${fmt}).`);
           continue;
         }
 
@@ -228,7 +258,7 @@ export default function registerMessageHandlers(sock) {
         if (ntext === '!pautas') {
             if (isDm) {
               const ok = await requireGroupContext();
-              if (!ok) { await safePost(sock, group.id, 'ℹ️ Este comando precisa do contexto do grupo.'); continue; }
+              if (!ok) { await sendReply(group.id, 'ℹ️ Este comando precisa do contexto do grupo.'); continue; }
             }
           const list = (db.data.proposals || [])
             .filter((p) => p.groupJid === group.id)
@@ -239,7 +269,7 @@ export default function registerMessageHandlers(sock) {
               return `${p.title} (${p.status}) — Prazo: ${left} (até ${fmt})`;
             })
             .join('\n');
-          await safePost(sock, group.id, list || 'ℹ️ Sem pautas registradas.');
+          await sendReply(group.id, list || 'ℹ️ Sem pautas registradas.');
           continue;
         }
 
@@ -258,10 +288,8 @@ export default function registerMessageHandlers(sock) {
           helpMsg.push('• !me — ver seu nível, XP e votos registrados');
           helpMsg.push('• !ranking — ver os maiores votantes (usa JID se nenhum nome salvo) — funciona em grupo ou via DM se `groupJid` estiver configurado');
           helpMsg.push('• !setnome <seu nome> — definir nome exibido no ranking (funciona em DM)');
-          helpMsg.push('');
-          helpMsg.push('Para mais detalhes, consulte o README ou peça ao admin.');
 
-          await safePost(sock, group.id, helpMsg.join('\n'));
+          await sendReply(group.id, helpMsg.join('\n'));
           continue;
         }
 
@@ -270,7 +298,7 @@ export default function registerMessageHandlers(sock) {
           const raw = text.split(/\s+/).slice(1).join(' ').trim();
           const voterId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
           if (!raw) {
-            await safePost(sock, group.id, `❗ Uso: !setnome <seu nome> — ex.: !setnome João Silva`);
+            await sendReply(group.id, `❗ Uso: !setnome <seu nome> — ex.: !setnome João Silva`);
             continue;
           }
           try {
@@ -280,13 +308,13 @@ export default function registerMessageHandlers(sock) {
             db.data.users[voterId].name = raw;
             await db.write();
             if (prev && prev !== raw) {
-              await safePost(sock, group.id, `✅ Nome atualizado: '${prev}' → '${raw}' (aparecerá no ranking)`);
+              await sendReply(group.id, `✅ Nome atualizado: '${prev}' → '${raw}' (aparecerá no ranking)`);
             } else {
-              await safePost(sock, group.id, `✅ Nome definido: ${raw} (aparecerá no ranking)`);
+              await sendReply(group.id, `✅ Nome definido: ${raw} (aparecerá no ranking)`);
             }
           } catch (e) {
             logger.error({ e, voterId, raw }, 'failed to set name');
-            await safePost(sock, group.id, '❗ Falha ao salvar o nome. Tente novamente.');
+            await sendReply(group.id, '❗ Falha ao salvar o nome. Tente novamente.');
           }
           continue;
         }
@@ -294,8 +322,8 @@ export default function registerMessageHandlers(sock) {
         // --- Admin: !resync-names (optional) - refreshes names for all users from contacts/group metadata
         if (ntext === '!resync-names') {
           // only allow if adminJid is configured and matches sender
-          if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
-            await safePost(sock, group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !resync-names.');
+            if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
+            await sendReply(group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !resync-names.');
             continue;
           }
           try {
@@ -330,10 +358,10 @@ export default function registerMessageHandlers(sock) {
               }
             }
             await db.write();
-            await safePost(sock, group.id, `✅ Resync concluído. Nomes atualizados: ${changed}. Usuários verificados: ${users.length}.`);
+            await sendReply(group.id, `✅ Resync concluído. Nomes atualizados: ${changed}. Usuários verificados: ${users.length}.`);
           } catch (e) {
             logger.error({ e }, 'resync-names failed');
-            await safePost(sock, group.id, '❗ Falha ao ressincronizar nomes. Veja os logs.');
+            await sendReply(group.id, '❗ Falha ao ressincronizar nomes. Veja os logs.');
           }
           continue;
         }
@@ -341,7 +369,7 @@ export default function registerMessageHandlers(sock) {
           // --- Admin: !fetch-contacts - attempt to resolve names for all group participants
           if (ntext === '!fetch-contacts') {
             if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
-              await safePost(sock, group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !fetch-contacts.');
+              await sendReply(group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !fetch-contacts.');
               continue;
             }
             try {
@@ -356,10 +384,10 @@ export default function registerMessageHandlers(sock) {
                 }
               }
               await db.write();
-              await safePost(sock, group.id, `✅ fetch-contacts concluído. Nomes atualizados: ${changed}. Participantes verificados: ${parts.length}.`);
+              await sendReply(group.id, `✅ fetch-contacts concluído. Nomes atualizados: ${changed}. Participantes verificados: ${parts.length}.`);
             } catch (e) {
               logger.error({ e }, 'fetch-contacts failed');
-              await safePost(sock, group.id, '❗ Falha ao buscar contatos. Veja os logs.');
+              await sendReply(group.id, '❗ Falha ao buscar contatos. Veja os logs.');
             }
             continue;
           }
@@ -367,7 +395,7 @@ export default function registerMessageHandlers(sock) {
           // --- Admin: !dump-users - print persisted users summary for debugging
           if (ntext === '!dump-users') {
             if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
-              await safePost(sock, group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !dump-users.');
+              await sendReply(group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !dump-users.');
               continue;
             }
             try {
@@ -376,7 +404,7 @@ export default function registerMessageHandlers(sock) {
                 return `${jid} — name: ${u.name || '[null]'} — xp: ${u.xp || 0} — votesCount: ${u.votesCount || 0} — lastSeen: ${u.lastSeenISO || '[none]'}`;
               });
               if (users.length === 0) {
-                await safePost(sock, group.id, 'ℹ️ Nenhum usuário persistido em data.json.');
+                await sendReply(group.id, 'ℹ️ Nenhum usuário persistido em data.json.');
               } else {
                 // send in chunks if long
                 const chunkSize = 12;
