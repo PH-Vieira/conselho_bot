@@ -51,21 +51,41 @@ export default function registerMessageHandlers(sock) {
         const m = unwrapMessage(msg.message);
         const remoteJid = msg.key.remoteJid;
         const isGroup = remoteJid?.endsWith('@g.us');
-        if (!isGroup) continue;
-
         let group = null;
-        if (CONFIG.groupJid) {
-          if (CONFIG.groupJid !== remoteJid) continue;
-          try {
-            group = await sock.groupMetadata(remoteJid);
-          } catch (err) {
-            logger.warn({ err, remoteJid }, 'failed to fetch group metadata for configured groupJid');
-            continue;
+        const isDm = !isGroup;
+        // helper to ensure we have a configured group when a command requires group context
+        async function requireGroupContext() {
+          if (group && group.id && group.id.endsWith('@g.us')) return true;
+          if (CONFIG.groupJid) {
+            try {
+              group = await sock.groupMetadata(CONFIG.groupJid);
+              return true;
+            } catch (e) {
+              logger.warn({ e, cfgGroup: CONFIG.groupJid }, 'requireGroupContext: failed to fetch configured group metadata');
+              return false;
+            }
+          }
+          return false;
+        }
+
+        if (isGroup) {
+          if (CONFIG.groupJid) {
+            if (CONFIG.groupJid !== remoteJid) continue;
+            try {
+              group = await sock.groupMetadata(remoteJid);
+            } catch (err) {
+              logger.warn({ err, remoteJid }, 'failed to fetch group metadata for configured groupJid');
+              continue;
+            }
+          } else {
+            group = await helpers.getGroupByName(sock, CONFIG.groupName);
+            if (!group) continue;
+            if (group.id !== remoteJid) continue;
           }
         } else {
-          group = await helpers.getGroupByName(sock, CONFIG.groupName);
-          if (!group) continue;
-          if (group.id !== remoteJid) continue;
+          // Private chat (DM) — create a minimal placeholder so handlers can reply using group.id
+          const privateId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
+          group = { id: privateId, participants: [] };
         }
 
         const sender = msg.pushName || jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
@@ -91,6 +111,13 @@ export default function registerMessageHandlers(sock) {
 
         // 1) Criar pauta: !pauta <título>
         if (ntext.startsWith('!pauta ')) {
+            if (isDm) {
+              const ok = await requireGroupContext();
+              if (!ok) {
+                await safePost(sock, group.id, 'ℹ️ Este comando só funciona em grupo. Ou inicie uma DM com o bot para usar comandos pessoais como !setnome ou configure `groupJid` para permitir uso via DM.');
+                continue;
+              }
+            }
           // Support optional time specifiers. Examples:
           //  !pauta Título
           //  !pauta Título | 48h
@@ -174,6 +201,10 @@ export default function registerMessageHandlers(sock) {
         // --- Debug: reabrir a proposal by id: !reabrir <id>
         // Useful to re-send the formatted proposal text without creating a new one.
         if (ntext.startsWith('!reabrir')) {
+            if (isDm) {
+              const ok = await requireGroupContext();
+              if (!ok) { await safePost(sock, group.id, 'ℹ️ Este comando precisa do contexto do grupo.'); continue; }
+            }
           const [, rawId] = ntext.split(' ');
           const target = rawId
             ? db.data.proposals.find((p) => p.id === rawId && p.groupJid === group.id)
@@ -190,6 +221,10 @@ export default function registerMessageHandlers(sock) {
 
         // 3) Listar pautas: !pautas
         if (ntext === '!pautas') {
+            if (isDm) {
+              const ok = await requireGroupContext();
+              if (!ok) { await safePost(sock, group.id, 'ℹ️ Este comando precisa do contexto do grupo.'); continue; }
+            }
           const list = (db.data.proposals || [])
             .filter((p) => p.groupJid === group.id)
             .slice(-10)
@@ -216,8 +251,8 @@ export default function registerMessageHandlers(sock) {
           helpMsg.push('• !contagem — mostrar votos e prazo da pauta atual');
           helpMsg.push('• !pautas — listar pautas recentes');
           helpMsg.push('• !me — ver seu nível, XP e votos registrados');
-          helpMsg.push('• !ranking — ver os maiores votantes (usa JID se nenhum nome salvo)');
-          helpMsg.push('• !setnome <seu nome> — definir nome exibido no ranking');
+          helpMsg.push('• !ranking — ver os maiores votantes (usa JID se nenhum nome salvo) — funciona em grupo ou via DM se `groupJid` estiver configurado');
+          helpMsg.push('• !setnome <seu nome> — definir nome exibido no ranking (funciona em DM)');
           helpMsg.push('');
           helpMsg.push('Para mais detalhes, consulte o README ou peça ao admin.');
 
@@ -324,6 +359,34 @@ export default function registerMessageHandlers(sock) {
             continue;
           }
 
+          // --- Admin: !dump-users - print persisted users summary for debugging
+          if (ntext === '!dump-users') {
+            if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
+              await safePost(sock, group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !dump-users.');
+              continue;
+            }
+            try {
+              await db.read();
+              const users = Object.entries(db.data.users || {}).map(([jid, u]) => {
+                return `${jid} — name: ${u.name || '[null]'} — xp: ${u.xp || 0} — votesCount: ${u.votesCount || 0} — lastSeen: ${u.lastSeenISO || '[none]'}`;
+              });
+              if (users.length === 0) {
+                await safePost(sock, group.id, 'ℹ️ Nenhum usuário persistido em data.json.');
+              } else {
+                // send in chunks if long
+                const chunkSize = 12;
+                for (let i = 0; i < users.length; i += chunkSize) {
+                  const chunk = users.slice(i, i + chunkSize).join('\n');
+                  await safePost(sock, group.id, `📦 Usuários persistidos (parte ${Math.floor(i / chunkSize) + 1}/${Math.ceil(users.length / chunkSize)}):\n${chunk}`);
+                }
+              }
+            } catch (e) {
+              logger.error({ e }, 'dump-users failed');
+              await safePost(sock, group.id, '❗ Falha ao listar usuários persistidos. Veja os logs.');
+            }
+            continue;
+          }
+
           // --- Admin: !dedupe-users [dry|apply] - detect and optionally merge duplicate user entries
           if (ntext.startsWith('!dedupe-users')) {
             if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
@@ -418,6 +481,10 @@ export default function registerMessageHandlers(sock) {
 
         // --- Ranking: !ranking
         if (ntext === '!ranking') {
+            if (isDm) {
+              const ok = await requireGroupContext();
+              if (!ok) { await safePost(sock, group.id, 'ℹ️ Este comando precisa do contexto do grupo.'); continue; }
+            }
           // Ensure we have the latest DB contents (pick up recent !setnome writes)
           try { await db.read(); } catch (e) { logger.debug({ e }, 'db.read failed in ranking'); }
           // Build union of sources: DB users, group participants, socket contacts, and proposal voters
@@ -525,6 +592,10 @@ export default function registerMessageHandlers(sock) {
 
         // ===== Novo: Comando !votar <id|nome> [sim|nao] =====
         if (ntext.startsWith('!votar')) {
+            if (isDm) {
+              const ok = await requireGroupContext();
+              if (!ok) { await safePost(sock, group.id, 'ℹ️ Para votar, o bot precisa do contexto do grupo (pautas).'); continue; }
+            }
           // Use original text to preserve case for ids; normalized ntext is only for command detection
           const rawParts = text.split(/\s+/).filter(Boolean);
           let idOrName = rawParts[1]; // Extract id or name from command
@@ -592,33 +663,7 @@ export default function registerMessageHandlers(sock) {
             }
           }
 
-            // --- Admin: !dump-users - print persisted users summary for debugging
-            if (ntext === '!dump-users') {
-              if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
-                await safePost(sock, group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !dump-users.');
-                continue;
-              }
-              try {
-                await db.read();
-                const users = Object.entries(db.data.users || {}).map(([jid, u]) => {
-                  return `${jid} — name: ${u.name || '[null]'} — xp: ${u.xp || 0} — votesCount: ${u.votesCount || 0} — lastSeen: ${u.lastSeenISO || '[none]'}`;
-                });
-                if (users.length === 0) {
-                  await safePost(sock, group.id, 'ℹ️ Nenhum usuário persistido em data.json.');
-                } else {
-                  // send in chunks if long
-                  const chunkSize = 12;
-                  for (let i = 0; i < users.length; i += chunkSize) {
-                    const chunk = users.slice(i, i + chunkSize).join('\n');
-                    await safePost(sock, group.id, `📦 Usuários persistidos (parte ${Math.floor(i / chunkSize) + 1}/${Math.ceil(users.length / chunkSize)}):\n${chunk}`);
-                  }
-                }
-              } catch (e) {
-                logger.error({ e }, 'dump-users failed');
-                await safePost(sock, group.id, '❗ Falha ao listar usuários persistidos. Veja os logs.');
-              }
-              continue;
-            }
+          
           if (!target) {
             logger.info({ idOrName, groupId: group.id }, '!votar: no matching target found');
             await safePost(sock, group.id, `ℹ️ Pauta '${idOrName}' não encontrada neste grupo.`);
