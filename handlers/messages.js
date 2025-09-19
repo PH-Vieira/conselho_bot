@@ -3,6 +3,7 @@ import { db } from '../lib/db.js';
 import logger from '../lib/logger.js';
 import helpers, { isYesToken, isNoToken, matchStickerHash, levelFromXp, titleForLevel } from '../lib/helpers.js';
 import { ensureUser, recordUserVoteOnce, listUsers } from '../lib/db.js';
+import userUtils from '../lib/userUtils.js';
 import { safePost } from '../lib/messaging.js';
 import { nanoid } from 'nanoid';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -75,20 +76,12 @@ export default function registerMessageHandlers(sock) {
             const cmdUserId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
             ensureUser(cmdUserId);
             db.data.users[cmdUserId].lastSeenISO = new Date().toISOString();
-            // prefer sender pushName, else try group metadata or contacts
-            if (!db.data.users[cmdUserId].name || db.data.users[cmdUserId].name === cmdUserId.split('@')[0]) {
-              let resolved = sender || null;
-              try {
-                const part = (group && group.participants) ? (group.participants.find((p) => p.id === cmdUserId) || null) : null;
-                resolved = resolved || part?.name || part?.notify || part?.pushname || null;
-              } catch (e) {}
-              if (!resolved && sock.contacts && sock.contacts[cmdUserId]) {
-                const c = sock.contacts[cmdUserId];
-                resolved = c.name || c.notify || c.vname || resolved;
-              }
-              if (resolved) db.data.users[cmdUserId].name = resolved;
+            // try to resolve + persist name via helper
+            try {
+              await userUtils.resolveAndPersistName(sock, group, cmdUserId, sender);
+            } catch (e) {
+              logger.debug({ e, cmdUserId }, 'resolveAndPersistName failed on command persist');
             }
-            await db.write();
           }
         } catch (e) {
           logger.debug({ e }, 'persist command user failed');
@@ -160,29 +153,11 @@ export default function registerMessageHandlers(sock) {
             openedAtISO,
             deadlineISO,
             votes: {},
-            status: 'open',
+            status: 'open'
           });
           await db.write();
-          const timeLeft = helpers.humanTimeLeft(deadlineISO);
-          const formattedDeadline = helpers.formatToUTCMinus3(deadlineISO);
-          await safePost(
-            sock,
-            group.id,
-            `📢 Pauta *${title}* aberta por *${sender}*:\n> ${title}\n⏳ Prazo: ${timeLeft} (até ${formattedDeadline}).\nVote com ✅ / ❌, envie 'sim'/'nao' ou use a figurinha do Conselho para confirmar.`
-          );
+          await safePost(sock, group.id, `✅ Pauta criada: *${title}* (id: ${id}). Use !votar ${id} sim/nao para votar.`);
           continue;
-        }
-
-        // 2) Contagem atual: !contagem [id]
-        if (ntext.startsWith('!contagem')) {
-          const [, rawId] = ntext.split(' ');
-          const target = rawId
-            ? db.data.proposals.find((p) => p.id === rawId)
-            : db.data.proposals.filter((p) => p.status === 'open').slice(-1)[0];
-          if (!target) {
-            await safePost(sock, group.id, 'ℹ️ Nenhuma pauta encontrada.');
-            continue;
-          }
           const { yes, no } = helpers.summarizeVotes(target.votes);
           const left = helpers.humanTimeLeft(target.deadlineISO);
           const fmt = helpers.formatToUTCMinus3(target.deadlineISO);
@@ -519,24 +494,11 @@ export default function registerMessageHandlers(sock) {
               try {
                 const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                 const res = await recordUserVoteOnce(voterId, target.id, xp);
-                  // Persist the voter's current display name into the DB so ranking can show names
-                  try {
-                    ensureUser(voterId);
-                    // prefer explicit sender, else try to resolve from group metadata or contacts
-                    let resolvedName = sender || null;
-                    if (!resolvedName) {
-                      const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
-                      resolvedName = part?.name || part?.notify || part?.pushname || null;
-                    }
-                    if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
-                      const c = sock.contacts[voterId];
-                      resolvedName = c.name || c.notify || c.vname || null;
-                    }
-                    if (resolvedName) db.data.users[voterId].name = resolvedName;
-                    await db.write();
-                  } catch (e) {
-                    logger.debug({ e, voterId, sender }, 'failed to persist voter name');
-                  }
+                try {
+                  await userUtils.resolveAndPersistName(sock, group, voterId, sender);
+                } catch (e) {
+                  logger.debug({ e, voterId, sender }, 'resolveAndPersistName failed after vote');
+                }
                 if (res.awarded && res.newLevel > res.oldLevel) {
                   const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
                   // send detailed level-up in DM and a short hint in the group
@@ -570,20 +532,9 @@ export default function registerMessageHandlers(sock) {
                 const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                 const res = await recordUserVoteOnce(voterId, target.id, xp);
                   try {
-                    ensureUser(voterId);
-                    let resolvedName = sender || null;
-                    if (!resolvedName) {
-                      const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
-                      resolvedName = part?.name || part?.notify || part?.pushname || null;
-                    }
-                    if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
-                      const c = sock.contacts[voterId];
-                      resolvedName = c.name || c.notify || c.vname || null;
-                    }
-                    if (resolvedName) db.data.users[voterId].name = resolvedName;
-                    await db.write();
+                    await userUtils.resolveAndPersistName(sock, group, voterId, sender);
                   } catch (e) {
-                    logger.debug({ e, voterId, sender }, 'failed to persist voter name');
+                    logger.debug({ e, voterId, sender }, 'resolveAndPersistName failed after vote');
                   }
                 if (res.awarded && res.newLevel > res.oldLevel) {
                   const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
@@ -676,20 +627,9 @@ export default function registerMessageHandlers(sock) {
                   const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                   const res = await recordUserVoteOnce(voterId, target.id, xp);
                   try {
-                    ensureUser(voterId);
-                    let resolvedName = sender || null;
-                    if (!resolvedName) {
-                      const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
-                      resolvedName = part?.name || part?.notify || part?.pushname || null;
-                    }
-                    if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
-                      const c = sock.contacts[voterId];
-                      resolvedName = c.name || c.notify || c.vname || null;
-                    }
-                    if (resolvedName) db.data.users[voterId].name = resolvedName;
-                    await db.write();
+                    await userUtils.resolveAndPersistName(sock, group, voterId, sender);
                   } catch (e) {
-                    logger.debug({ e, voterId, sender }, 'failed to persist voter name');
+                    logger.debug({ e, voterId, sender }, 'resolveAndPersistName failed after vote');
                   }
                     if (res.awarded && res.newLevel > res.oldLevel) {
                       const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
@@ -767,20 +707,9 @@ export default function registerMessageHandlers(sock) {
                       const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                       const res = await recordUserVoteOnce(voterId, target.id, xp);
                       try {
-                        ensureUser(voterId);
-                        let resolvedName = sender || null;
-                        if (!resolvedName) {
-                          const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
-                          resolvedName = part?.name || part?.notify || part?.pushname || null;
-                        }
-                        if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
-                          const c = sock.contacts[voterId];
-                          resolvedName = c.name || c.notify || c.vname || null;
-                        }
-                        if (resolvedName) db.data.users[voterId].name = resolvedName;
-                        await db.write();
+                        await userUtils.resolveAndPersistName(sock, group, voterId, sender);
                       } catch (e) {
-                        logger.debug({ e, voterId, sender }, 'failed to persist voter name');
+                        logger.debug({ e, voterId, sender }, 'resolveAndPersistName failed after sticker vote');
                       }
                       if (res.awarded && res.newLevel > res.oldLevel) {
                         const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
@@ -828,20 +757,9 @@ export default function registerMessageHandlers(sock) {
                         const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
                         const res = await recordUserVoteOnce(voterId, target.id, xp);
                           try {
-                            ensureUser(voterId);
-                            let resolvedName = sender || null;
-                            if (!resolvedName) {
-                              const part = (group && group.participants) ? (group.participants.find((p) => p.id === voterId) || null) : null;
-                              resolvedName = part?.name || part?.notify || part?.pushname || null;
-                            }
-                            if (!resolvedName && sock.contacts && sock.contacts[voterId]) {
-                              const c = sock.contacts[voterId];
-                              resolvedName = c.name || c.notify || c.vname || null;
-                            }
-                            if (resolvedName) db.data.users[voterId].name = resolvedName;
-                            await db.write();
+                            await userUtils.resolveAndPersistName(sock, group, voterId, sender);
                           } catch (e) {
-                            logger.debug({ e, voterId, sender }, 'failed to persist voter name');
+                            logger.debug({ e, voterId, sender }, 'resolveAndPersistName failed after sticker vote');
                           }
                         if (res.awarded && res.newLevel > res.oldLevel) {
                           const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
