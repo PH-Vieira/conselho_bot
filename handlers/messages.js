@@ -4,6 +4,8 @@ import logger from '../lib/logger.js';
 import helpers, { isYesToken, isNoToken, matchStickerHash, levelFromXp, titleForLevel } from '../lib/helpers.js';
 import { ensureUser, recordUserVoteOnce, listUsers } from '../lib/db.js';
 import userUtils from '../lib/userUtils.js';
+import fs from 'fs';
+const fsp = fs.promises;
 import { safePost } from '../lib/messaging.js';
 import { nanoid } from 'nanoid';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -232,10 +234,16 @@ export default function registerMessageHandlers(sock) {
             continue;
           }
           try {
+            await db.read();
             ensureUser(voterId);
+            const prev = db.data.users[voterId].name || null;
             db.data.users[voterId].name = raw;
             await db.write();
-            await safePost(sock, group.id, `✅ Nome definido: ${raw} (aparecerá no ranking)`);
+            if (prev && prev !== raw) {
+              await safePost(sock, group.id, `✅ Nome atualizado: '${prev}' → '${raw}' (aparecerá no ranking)`);
+            } else {
+              await safePost(sock, group.id, `✅ Nome definido: ${raw} (aparecerá no ranking)`);
+            }
           } catch (e) {
             logger.error({ e, voterId, raw }, 'failed to set name');
             await safePost(sock, group.id, '❗ Falha ao salvar o nome. Tente novamente.');
@@ -289,6 +297,106 @@ export default function registerMessageHandlers(sock) {
           }
           continue;
         }
+
+          // --- Admin: !fetch-contacts - attempt to resolve names for all group participants
+          if (ntext === '!fetch-contacts') {
+            if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
+              await safePost(sock, group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !fetch-contacts.');
+              continue;
+            }
+            try {
+              const parts = (group && group.participants) ? group.participants.map((p) => p.id) : [];
+              let changed = 0;
+              for (const pid of parts) {
+                try {
+                  const res = await userUtils.resolveAndPersistName(sock, group, pid, null);
+                  if (res && res.changed) changed += 1;
+                } catch (e) {
+                  logger.debug({ e, pid }, 'fetch-contacts: per-participant resolve failed');
+                }
+              }
+              await db.write();
+              await safePost(sock, group.id, `✅ fetch-contacts concluído. Nomes atualizados: ${changed}. Participantes verificados: ${parts.length}.`);
+            } catch (e) {
+              logger.error({ e }, 'fetch-contacts failed');
+              await safePost(sock, group.id, '❗ Falha ao buscar contatos. Veja os logs.');
+            }
+            continue;
+          }
+
+          // --- Admin: !dedupe-users [dry|apply] - detect and optionally merge duplicate user entries
+          if (ntext.startsWith('!dedupe-users')) {
+            if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
+              await safePost(sock, group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !dedupe-users.');
+              continue;
+            }
+            const parts = ntext.split(/\s+/).slice(1);
+            const mode = parts[0] || 'dry';
+            try {
+              const users = Object.keys(db.data.users || {});
+              const map = {};
+              for (const k of users) {
+                const norm = jidNormalizedUser(k);
+                map[norm] = map[norm] || [];
+                map[norm].push(k);
+              }
+              const groups = Object.entries(map).filter(([, arr]) => arr.length > 1);
+              if (groups.length === 0) {
+                await safePost(sock, group.id, 'ℹ️ Nenhum usuário duplicado encontrado.');
+                continue;
+              }
+              const reportLines = [];
+              for (const [norm, originals] of groups) {
+                reportLines.push(`- ${norm}: ${originals.join(', ')}`);
+              }
+              if (mode === 'dry') {
+                await safePost(sock, group.id, `🔎 Dedupe dry-run encontrado ${groups.length} grupos de duplicados:\n${reportLines.join('\n')}`);
+                continue;
+              }
+              if (mode === 'apply') {
+                // backup data.json
+                const backupName = `./data.json.bak.${Date.now()}`;
+                try {
+                  await fsp.writeFile(backupName, JSON.stringify(db.data, null, 2), 'utf8');
+                } catch (e) {
+                  logger.warn({ e, backupName }, 'failed to write backup before dedupe');
+                  await safePost(sock, group.id, `❗ Falha ao criar backup ${backupName}. Aborting.`);
+                  continue;
+                }
+                // perform merges
+                for (const [norm, originals] of groups) {
+                  // ensure canonical entry uses normalized jid
+                  const canonical = norm;
+                  ensureUser(canonical);
+                  const target = db.data.users[canonical];
+                  for (const orig of originals) {
+                    if (orig === canonical) continue;
+                    const src = db.data.users[orig];
+                    if (!src) continue;
+                    target.xp = (Number(target.xp || 0) + Number(src.xp || 0));
+                    target.votesCount = (Number(target.votesCount || 0) + Number(src.votesCount || 0));
+                    target.votedProposals = Object.assign({}, target.votedProposals || {}, src.votedProposals || {});
+                    // prefer existing name, else take src
+                    if (!target.name && src.name) target.name = src.name;
+                    // keep most recent lastSeenISO
+                    const a = target.lastSeenISO || null;
+                    const b = src.lastSeenISO || null;
+                    if (!a || (b && b > a)) target.lastSeenISO = b;
+                    // remove src
+                    delete db.data.users[orig];
+                  }
+                }
+                await db.write();
+                await safePost(sock, group.id, `✅ Dedupe aplicado. Backup salvo em ${backupName}. Grupos mesclados: ${groups.length}.`);
+                continue;
+              }
+              await safePost(sock, group.id, "❗ Uso: !dedupe-users [dry|apply] — 'dry' mostra o relatório, 'apply' executa a mesclagem (faz backup)." );
+            } catch (e) {
+              logger.error({ e }, 'dedupe-users failed');
+              await safePost(sock, group.id, '❗ Falha ao executar dedupe-users. Veja os logs.');
+            }
+            continue;
+          }
 
         // --- Perfil: !me
         if (ntext === '!me') {
