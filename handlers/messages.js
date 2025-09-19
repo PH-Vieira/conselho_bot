@@ -6,7 +6,7 @@ import { ensureUser, recordUserVoteOnce, listUsers } from '../lib/db.js';
 import userUtils from '../lib/userUtils.js';
 import fs from 'fs';
 const fsp = fs.promises;
-import { safePost } from '../lib/messaging.js';
+import { safePost as importedSafePost } from '../lib/messaging.js';
 import { nanoid } from 'nanoid';
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
@@ -96,7 +96,7 @@ export default function registerMessageHandlers(sock) {
         }
         // Wrap the imported safePost so existing calls that target the group
         // will be routed to the DM when the original message was a DM.
-        const _origSafePost = safePost;
+        const _origSafePost = importedSafePost;
         function safePost(sockArg, to, text) {
           const toId = (isDm && to === group.id) ? dmReplyTo : to;
           return _origSafePost(sockArg, toId, text);
