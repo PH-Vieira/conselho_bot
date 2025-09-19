@@ -268,6 +268,53 @@ export default function registerMessageHandlers(sock) {
           continue;
         }
 
+        // --- Admin: !resync-names (optional) - refreshes names for all users from contacts/group metadata
+        if (ntext === '!resync-names') {
+          // only allow if adminJid is configured and matches sender
+          if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
+            await safePost(sock, group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !resync-names.');
+            continue;
+          }
+          try {
+            const users = Object.keys(db.data.users || {});
+            let changed = 0;
+            for (const u of users) {
+              try {
+                const norm = jidNormalizedUser(u);
+                let resolved = db.data.users[u].name || null;
+                // try group participants first
+                try {
+                  const part = (group && group.participants) ? (group.participants.find((p) => p.id === norm) || null) : null;
+                  resolved = resolved || part?.name || part?.notify || part?.pushname || null;
+                } catch (e) {}
+                // try socket getName or contacts
+                try {
+                  if (!resolved && typeof sock.getName === 'function') {
+                    const n = await sock.getName(norm).catch(() => null);
+                    if (n) resolved = n;
+                  }
+                  if (!resolved && sock.contacts && sock.contacts[norm]) {
+                    const c = sock.contacts[norm];
+                    resolved = c.name || c.notify || c.vname || resolved;
+                  }
+                } catch (e) {}
+                if (resolved && resolved !== db.data.users[u].name) {
+                  db.data.users[u].name = resolved;
+                  changed += 1;
+                }
+              } catch (e) {
+                logger.debug({ e, u }, 'resync-names: per-user lookup failed');
+              }
+            }
+            await db.write();
+            await safePost(sock, group.id, `✅ Resync concluído. Nomes atualizados: ${changed}. Usuários verificados: ${users.length}.`);
+          } catch (e) {
+            logger.error({ e }, 'resync-names failed');
+            await safePost(sock, group.id, '❗ Falha ao ressincronizar nomes. Veja os logs.');
+          }
+          continue;
+        }
+
         // --- Perfil: !me
         if (ntext === '!me') {
           const voterId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
