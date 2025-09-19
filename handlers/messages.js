@@ -591,6 +591,34 @@ export default function registerMessageHandlers(sock) {
               }
             }
           }
+
+            // --- Admin: !dump-users - print persisted users summary for debugging
+            if (ntext === '!dump-users') {
+              if (!CONFIG.adminJid || jidNormalizedUser(CONFIG.adminJid) !== jidNormalizedUser(msg.key.participant || msg.key.remoteJid)) {
+                await safePost(sock, group.id, 'ℹ️ Comando restrito. Apenas o administrador pode executar !dump-users.');
+                continue;
+              }
+              try {
+                await db.read();
+                const users = Object.entries(db.data.users || {}).map(([jid, u]) => {
+                  return `${jid} — name: ${u.name || '[null]'} — xp: ${u.xp || 0} — votesCount: ${u.votesCount || 0} — lastSeen: ${u.lastSeenISO || '[none]'}`;
+                });
+                if (users.length === 0) {
+                  await safePost(sock, group.id, 'ℹ️ Nenhum usuário persistido em data.json.');
+                } else {
+                  // send in chunks if long
+                  const chunkSize = 12;
+                  for (let i = 0; i < users.length; i += chunkSize) {
+                    const chunk = users.slice(i, i + chunkSize).join('\n');
+                    await safePost(sock, group.id, `📦 Usuários persistidos (parte ${Math.floor(i / chunkSize) + 1}/${Math.ceil(users.length / chunkSize)}):\n${chunk}`);
+                  }
+                }
+              } catch (e) {
+                logger.error({ e }, 'dump-users failed');
+                await safePost(sock, group.id, '❗ Falha ao listar usuários persistidos. Veja os logs.');
+              }
+              continue;
+            }
           if (!target) {
             logger.info({ idOrName, groupId: group.id }, '!votar: no matching target found');
             await safePost(sock, group.id, `ℹ️ Pauta '${idOrName}' não encontrada neste grupo.`);
