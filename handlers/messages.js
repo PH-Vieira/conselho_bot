@@ -69,6 +69,31 @@ export default function registerMessageHandlers(sock) {
         const text = m?.conversation || m?.extendedTextMessage?.text || '';
         const ntext = helpers.normalizeText(text);
 
+        // Persist a user entry when they use any bot command (messages starting with '!')
+        try {
+          if (text && text.trim().startsWith('!')) {
+            const cmdUserId = jidNormalizedUser(msg.key.participant || msg.key.remoteJid);
+            ensureUser(cmdUserId);
+            db.data.users[cmdUserId].lastSeenISO = new Date().toISOString();
+            // prefer sender pushName, else try group metadata or contacts
+            if (!db.data.users[cmdUserId].name || db.data.users[cmdUserId].name === cmdUserId.split('@')[0]) {
+              let resolved = sender || null;
+              try {
+                const part = (group && group.participants) ? (group.participants.find((p) => p.id === cmdUserId) || null) : null;
+                resolved = resolved || part?.name || part?.notify || part?.pushname || null;
+              } catch (e) {}
+              if (!resolved && sock.contacts && sock.contacts[cmdUserId]) {
+                const c = sock.contacts[cmdUserId];
+                resolved = c.name || c.notify || c.vname || resolved;
+              }
+              if (resolved) db.data.users[cmdUserId].name = resolved;
+            }
+            await db.write();
+          }
+        } catch (e) {
+          logger.debug({ e }, 'persist command user failed');
+        }
+
         // 1) Criar pauta: !pauta <título>
         if (ntext.startsWith('!pauta ')) {
           // Support optional time specifiers. Examples:
