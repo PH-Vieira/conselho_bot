@@ -1,9 +1,7 @@
 import CONFIG from '../lib/config.js';
-import { db } from '../lib/db.js';
+import { db, ensureUser, recordUserVoteOnce, listUsers, ensureGroupUser, listGroupUsers, recordUserVoteOnceGroup } from '../lib/db.js';
 import logger from '../lib/logger.js';
 import helpers, { isYesToken, isNoToken, matchStickerHash, levelFromXp, titleForLevel } from '../lib/helpers.js';
-import { ensureUser, recordUserVoteOnce, listUsers } from '../lib/db.js';
-import { ensureUser, recordUserVoteOnce, listUsers, ensureGroupUser, listGroupUsers, recordUserVoteOnceGroup } from '../lib/db.js';
 import userUtils from '../lib/userUtils.js';
 import fs from 'fs';
 const fsp = fs.promises;
