@@ -29,8 +29,10 @@ export default async function me(ctx) {
   const badge = helpers.badgeForLevel ? helpers.badgeForLevel(lvl.level) : '';
   const bar = helpers.progressBar ? helpers.progressBar(lvl.xpIntoLevel, lvl.xpForNextLevel, 12) : '';
   const emoji = helpers.pickRandom ? helpers.pickRandom(helpers.EMOJI_POOLS.confirm) : '';
+  // prefer explicit persisted name (from !setnome) before the runtime sender name
+  const displayName = (u && u.name) ? u.name : sender;
   const msgText = [];
-  msgText.push(`${badge} 👤 ${sender} — *Nível ${lvl.level}* (${title})`);
+  msgText.push(`${badge} 👤 ${displayName} — *Nível ${lvl.level}* (${title})`);
   msgText.push(`XP: ${u.xp || 0} (${lvl.xpIntoLevel}/${lvl.xpForNextLevel}) ${bar}`);
   msgText.push(`Votos registrados: ${u.votesCount || 0} ${emoji}`);
   await sendReply(group.id, msgText.join('\n'));

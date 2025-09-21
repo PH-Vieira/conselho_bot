@@ -3,6 +3,7 @@ import logger from './lib/logger.js';
 import CONFIG from './lib/config.js';
 import { initDb, db, cleanupPendingSelections } from './lib/db.js';
 import registerMessageHandlers from './handlers/messages.js';
+import { startMessageNotifier } from './lib/messageCounter.js';
 import { tickDeadlines } from './lib/votes.js';
 import { safePost } from './lib/messaging.js';
 
@@ -24,6 +25,7 @@ async function run() {
 
   let sock = null;
   let tickInterval = null;
+  let stopMessageNotifier = null;
   let reconnectDelay = 1000; // start with 1s
   let authFailureCount = 0;
   let tlsFailureCount = 0;
@@ -44,7 +46,7 @@ async function run() {
         logger.warn({ e }, 'registerMessageHandlers failed');
       }
 
-      // Scheduler: ensure only one interval is active
+  // Scheduler: ensure only one interval is active
       if (tickInterval) clearInterval(tickInterval);
       tickInterval = setInterval(async () => {
         try {
@@ -157,6 +159,11 @@ async function run() {
               unregisterHandlers = null;
             }
 
+            // stop message notifier if running
+            try {
+              if (stopMessageNotifier) { stopMessageNotifier(); stopMessageNotifier = null; }
+            } catch (e) {}
+
             if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
             if (sock && sock.end) await sock.end();
           } catch (e) {
@@ -187,6 +194,12 @@ async function run() {
   reconnectAttempts = 0;
 
       logger.info('Socket started');
+      // start message notifier (returns stop function)
+      try {
+        stopMessageNotifier = startMessageNotifier(sock);
+      } catch (e) {
+        logger.debug({ e }, 'failed to start message notifier');
+      }
     } catch (err) {
       logger.error({ err }, 'startSocket failed, scheduling reconnect');
       setTimeout(() => startSocket().catch(e => logger.error({ e }, 'reconnect attempt failed')), reconnectDelay);
