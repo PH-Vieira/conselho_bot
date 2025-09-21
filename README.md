@@ -68,22 +68,6 @@ Se o bot travar por problemas de sessão (conta emparelhada em outro local), ver
 
 ---
 
-## ⏰ Notificador de Inatividade (a cada 10 dias)
-
-- O bot mantém contagem de mensagens por usuário no grupo configurado e, a cada 10 dias, envia uma mensagem ao grupo indicando quem enviou menos mensagens nesse período e também notifica o `adminJid` (conselho).
-- Para testes, há um comando admin `!notify-now` que força a execução imediata do relatório (útil para validar sem esperar 10 dias).
-
-Testar manualmente (no grupo como administrador):
-
-```powershell
-# no grupo do bot, envie:
-!notify-now
-```
-
-Se quiser resetar manualmente a contagem, remova a chave `messageCounter.counts[<groupJid>]` em `data.json` ou use backup/edição direta.
-
----
-
 ## 🧩 Arquitetura / Onde editar
 
 - `index.js` — inicializa o cliente e o loop do bot

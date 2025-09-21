@@ -4,7 +4,6 @@ import logger from '../lib/logger.js';
 import helpers, { isYesToken, isNoToken, matchStickerHash, levelFromXp, titleForLevel } from '../lib/helpers.js';
 import { ensureUser, recordUserVoteOnce, listUsers } from '../lib/db.js';
 import userUtils from '../lib/userUtils.js';
-import { incrementGroupMessageCount } from '../lib/messageCounter.js';
 import fs from 'fs';
 const fsp = fs.promises;
 import { safePost as importedSafePost } from '../lib/messaging.js';
@@ -21,7 +20,6 @@ import fetchContactsCmd from './commands/fetch-contacts.js';
 import dedupeUsersCmd from './commands/dedupe-users.js';
 import contagemCmd from './commands/contagem.js';
 import pautasCmd from './commands/pautas.js';
-import notifyNowCmd from './commands/notify-now.js';
 // more command modules can be added here
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 
@@ -184,12 +182,6 @@ export default function registerMessageHandlers(sock) {
               } catch (e) {
                 logger.debug({ e, senderJid }, 'resolveAndPersistName failed while persisting group sender');
               }
-              // increment per-user message count for group activity
-              try {
-                await incrementGroupMessageCount(group.id, senderJid);
-              } catch (e) {
-                logger.debug({ e, senderJid, groupId: group.id }, 'incrementGroupMessageCount failed');
-              }
             }
           }
         } catch (e) {
@@ -230,7 +222,6 @@ export default function registerMessageHandlers(sock) {
           resyncNamesCmd,
           fetchContactsCmd,
           dedupeUsersCmd,
-          notifyNowCmd,
           contagemCmd,
           pautasCmd,
         ];
