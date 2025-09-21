@@ -274,18 +274,26 @@ export default function registerMessageHandlers(sock) {
         // 4) Ajuda: !help (resumido)
         if (ntext === '!help') {
           const helpMsg = [];
-          helpMsg.push('🛠️ Conselho de Pautas — comandos principais:');
+          helpMsg.push('🤝 Guia rápido do Conselho de Pautas');
           helpMsg.push('');
-          helpMsg.push('• !pauta <título> [<tempo>] — criar nova pauta (ex.: !pauta Reunião 48h)');
-          helpMsg.push('• !votar <id|nome> [sim|nao] — votar (use !votar <nome> para confirmar antes)');
-          helpMsg.push('• Envie "sim"/"nao" ou ✅/❌ — votar na pauta mais recente');
-          helpMsg.push('• Envie a figurinha do Conselho — trava seu voto (finaliza)');
+          helpMsg.push('• Criar uma pauta: envie `!pauta Título da pauta 48h`');
+          helpMsg.push('  - O tempo (ex.: 48h) é opcional. Se não informar, usaremos o padrão.');
           helpMsg.push('');
-          helpMsg.push('• !contagem — mostrar votos e prazo da pauta atual');
-          helpMsg.push('• !pautas — listar pautas recentes');
-          helpMsg.push('• !me — ver seu nível, XP e votos registrados');
-          helpMsg.push('• !ranking — ver os maiores votantes (usa JID se nenhum nome salvo) — funciona em grupo ou via DM se `groupJid` estiver configurado');
-          helpMsg.push('• !setnome <seu nome> — definir nome exibido no ranking (funciona em DM)');
+          helpMsg.push('• Votar em uma pauta: `!votar <id|nome> sim` ou `!votar <id|nome> nao`');
+          helpMsg.push('  - Se quiser apenas indicar a pauta antes de confirmar, envie `!votar <id|nome>` e o bot pede confirmação.');
+          helpMsg.push('  - Também é possível enviar "sim" / "nao" ou usar ✅ / ❌ para votar na pauta aberta mais recente.');
+          helpMsg.push('  - Enviando a figurinha do Conselho o seu voto fica travado (confirmado e definitivo).');
+          helpMsg.push('');
+          helpMsg.push('• Ver o status da pauta atual: `!contagem`');
+          helpMsg.push('• Listar pautas recentes: `!pautas`');
+          helpMsg.push('• Ver seu perfil: `!me` (mostra nível e votos)');
+          helpMsg.push('• Ver o ranking de participantes: `!ranking`');
+          helpMsg.push('• Definir o nome que aparece no ranking: `!setnome Seu Nome` (funciona em conversa privada com o bot)');
+          helpMsg.push('');
+          helpMsg.push('Dicas:');
+          helpMsg.push(' - Você pode usar o bot tanto no grupo quanto em conversa privada (DM).');
+          helpMsg.push(' - Se usar em privado, alguns comandos pedem contexto de grupo (o bot irá avisar se precisar).');
+          helpMsg.push(' - Perguntas ou problemas? Fale com o administrador do Conselho.');
 
           await sendReply(group.id, helpMsg.join('\n'));
           continue;
