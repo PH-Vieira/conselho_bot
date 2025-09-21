@@ -111,18 +111,19 @@ export default function registerMessageHandlers(sock) {
         }
 
         if (isGroup) {
-          if (CONFIG.groupJid) {
-            if (CONFIG.groupJid !== remoteJid) continue;
-            try {
-              group = await sock.groupMetadata(remoteJid);
-            } catch (err) {
-              logger.warn({ err, remoteJid }, 'failed to fetch group metadata for configured groupJid');
-              continue;
-            }
-          } else {
-            group = await helpers.getGroupByName(sock, CONFIG.groupName);
-            if (!group) continue;
-            if (group.id !== remoteJid) continue;
+          // Accept messages from any group — fetch the group's metadata so
+          // handlers can inspect participants and reply back to the correct
+          // group. Previously the code gated handling to a single configured
+          // `CONFIG.groupJid`/`groupName`; that prevented operation in other
+          // groups. We now allow any group and only require the configured
+          // group when a DM command explicitly needs group context
+          // (see `requireGroupContext`).
+          try {
+            group = await sock.groupMetadata(remoteJid);
+          } catch (err) {
+            logger.warn({ err, remoteJid }, 'failed to fetch group metadata for incoming group');
+            // if we can't fetch metadata, skip this message to avoid crashes
+            continue;
           }
         } else {
           // Private chat (DM) — create a minimal placeholder so handlers can reply using group.id
