@@ -32,6 +32,16 @@ export default async function setnome(ctx) {
     ctx.ensureUser(voterId);
     const prev = db.data.users[voterId].name || null;
     db.data.users[voterId].name = raw;
+    // also persist per-group if group context exists
+    try {
+      if (group && group.id) {
+        ctx.ensureGroupUser(group.id, voterId);
+        db.data.groups = db.data.groups || {};
+        db.data.groups[group.id].users[voterId].name = raw;
+      }
+    } catch (e) {
+      logger.debug({ e, voterId, groupId: group && group.id }, 'failed to persist group-scoped name');
+    }
     await db.write();
     if (prev && prev !== raw) {
       await sendReply(group.id, `✅ Nome atualizado: '${prev}' → '${raw}' (aparecerá no ranking)`);

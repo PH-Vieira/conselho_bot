@@ -26,16 +26,25 @@ export default async function dumpUsers(ctx) {
   }
   try {
     await db.read();
-    const users = Object.entries(db.data.users || {}).map(([jid, u]) => {
-      return `${jid} — name: ${u.name || '[null]'} — xp: ${u.xp || 0} — votesCount: ${u.votesCount || 0} — lastSeen: ${u.lastSeenISO || '[none]'}`;
-    });
-    if (users.length === 0) {
-      await sendReply(group.id, 'ℹ️ Nenhum usuário persistido em data.json.');
+    const globalUsers = Object.entries(db.data.users || {}).map(([jid, u]) => `${jid} — name: ${u.name || '[null]'} — xp: ${u.xp || 0} — votesCount: ${u.votesCount || 0} — lastSeen: ${u.lastSeenISO || '[none]'}`);
+    const groupUsersObj = (db.data.groups && db.data.groups[group.id] && db.data.groups[group.id].users) ? db.data.groups[group.id].users : {};
+    const groupUsers = Object.entries(groupUsersObj).map(([jid, u]) => `${jid} — name: ${u.name || '[null]'} — xp: ${u.xp || 0} — votesCount: ${u.votesCount || 0} — lastSeen: ${u.lastSeenISO || '[none]'}`);
+
+    const chunkSize = 12;
+    if (globalUsers.length === 0) {
+      await sendReply(group.id, 'ℹ️ Nenhum usuário global persistido em data.json.');
     } else {
-      const chunkSize = 12;
-      for (let i = 0; i < users.length; i += chunkSize) {
-        const chunk = users.slice(i, i + chunkSize).join('\n');
-        await sendReply(group.id, `📦 Usuários persistidos (parte ${Math.floor(i / chunkSize) + 1}/${Math.ceil(users.length / chunkSize)}):\n${chunk}`);
+      for (let i = 0; i < globalUsers.length; i += chunkSize) {
+        const chunk = globalUsers.slice(i, i + chunkSize).join('\n');
+        await sendReply(group.id, `📦 Usuários globais persistidos (parte ${Math.floor(i / chunkSize) + 1}/${Math.ceil(globalUsers.length / chunkSize)}):\n${chunk}`);
+      }
+    }
+    if (groupUsers.length === 0) {
+      await sendReply(group.id, 'ℹ️ Nenhum usuário escopado ao grupo persistido.');
+    } else {
+      for (let i = 0; i < groupUsers.length; i += chunkSize) {
+        const chunk = groupUsers.slice(i, i + chunkSize).join('\n');
+        await sendReply(group.id, `📦 Usuários do grupo persistidos (parte ${Math.floor(i / chunkSize) + 1}/${Math.ceil(groupUsers.length / chunkSize)}):\n${chunk}`);
       }
     }
   } catch (e) {

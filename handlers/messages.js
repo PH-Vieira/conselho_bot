@@ -3,6 +3,7 @@ import { db } from '../lib/db.js';
 import logger from '../lib/logger.js';
 import helpers, { isYesToken, isNoToken, matchStickerHash, levelFromXp, titleForLevel } from '../lib/helpers.js';
 import { ensureUser, recordUserVoteOnce, listUsers } from '../lib/db.js';
+import { ensureUser, recordUserVoteOnce, listUsers, ensureGroupUser, listGroupUsers, recordUserVoteOnceGroup } from '../lib/db.js';
 import userUtils from '../lib/userUtils.js';
 import fs from 'fs';
 const fsp = fs.promises;
@@ -175,10 +176,19 @@ export default function registerMessageHandlers(sock) {
             // ignore messages coming from the bot itself (some versions expose sock.user)
             const botJid = (sock && (sock.user?.id || sock.user?.jid)) ? jidNormalizedUser(sock.user.id || sock.user.jid) : null;
             if (senderJid && senderJid !== botJid) {
+              // persist global user and group-scoped user
               ensureUser(senderJid);
               db.data.users[senderJid].lastSeenISO = new Date().toISOString();
               try {
+                ensureGroupUser(group.id, senderJid);
+                db.data.groups = db.data.groups || {};
+                db.data.groups[group.id].users[senderJid].lastSeenISO = new Date().toISOString();
+              } catch (e) {
+                logger.debug({ e, senderJid, groupId: group.id }, 'ensureGroupUser failed');
+              }
+              try {
                 await userUtils.resolveAndPersistName(sock, group, senderJid, msg.pushName || null);
+                await incrementGroupMessageCount(group.id, senderJid);
               } catch (e) {
                 logger.debug({ e, senderJid }, 'resolveAndPersistName failed while persisting group sender');
               }
@@ -513,10 +523,19 @@ export default function registerMessageHandlers(sock) {
           const usersMap = {};
           const dbUsers = listUsers() || {};
 
-          // Seed from DB (persisted users) - prefer these names and xp
+          // Seed from DB (persisted users). Prefer group-scoped user data when available
           for (const [jid, data] of Object.entries(dbUsers)) {
             const norm = jidNormalizedUser(jid);
-            usersMap[norm] = { jid: norm, name: data.name || null, xp: Number(data.xp || 0), votesCount: 0 };
+            let name = data.name || null;
+            let xp = Number(data.xp || 0);
+            try {
+              if (db.data.groups && db.data.groups[group.id] && db.data.groups[group.id].users && db.data.groups[group.id].users[norm]) {
+                const gu = db.data.groups[group.id].users[norm];
+                name = gu.name || name;
+                xp = Number(gu.xp || xp || 0);
+              }
+            } catch (e) {}
+            usersMap[norm] = { jid: norm, name: name, xp: xp, votesCount: 0 };
           }
 
           // Add group participants (ensure they appear even if not in DB)
@@ -524,7 +543,12 @@ export default function registerMessageHandlers(sock) {
             const parts = (group && group.participants) ? group.participants.map((p) => p.id) : [];
             for (const pid of parts) {
               const norm = jidNormalizedUser(pid);
-              if (!usersMap[norm]) usersMap[norm] = { jid: norm, name: null, xp: 0, votesCount: 0 };
+              if (!usersMap[norm]) {
+                // check for group-scoped user
+                const gu = (db.data.groups && db.data.groups[group.id] && db.data.groups[group.id].users && db.data.groups[group.id].users[norm]) ? db.data.groups[group.id].users[norm] : null;
+                if (gu) usersMap[norm] = { jid: norm, name: gu.name || null, xp: Number(gu.xp || 0), votesCount: 0 };
+                else usersMap[norm] = { jid: norm, name: null, xp: 0, votesCount: 0 };
+              }
             }
           } catch (e) { logger.debug({ e }, 'failed to include group participants in ranking seed'); }
 
@@ -594,7 +618,8 @@ export default function registerMessageHandlers(sock) {
             resolvedRows.push({ jid: r.jid, name: display, xp: Number(r.xp || 0), votesCount: Number(r.votesCount || 0) });
           }
 
-          const rows = resolvedRows.sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp).slice(0, 50);
+          // Only show users that have XP to avoid huge listings of contacts without activity
+          const rows = resolvedRows.filter(r => Number(r.xp || 0) > 0).sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp).slice(0, 50);
           const maxXp = Math.max(...rows.map((r) => r.xp || 0), 1);
 
           const lines = rows.map((row, i) => {
@@ -716,7 +741,7 @@ export default function registerMessageHandlers(sock) {
               // award XP once per proposal
               try {
                 const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
-                const res = await recordUserVoteOnce(voterId, target.id, xp);
+                const res = await recordUserVoteOnceGroup(group.id, voterId, target.id, xp);
                 try {
                   await userUtils.resolveAndPersistName(sock, group, voterId, sender);
                 } catch (e) {
@@ -753,7 +778,7 @@ export default function registerMessageHandlers(sock) {
               // award XP once per proposal
               try {
                 const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
-                const res = await recordUserVoteOnce(voterId, target.id, xp);
+                const res = await recordUserVoteOnceGroup(group.id, voterId, target.id, xp);
                   try {
                     await userUtils.resolveAndPersistName(sock, group, voterId, sender);
                   } catch (e) {
@@ -848,7 +873,7 @@ export default function registerMessageHandlers(sock) {
                 await db.write();
                 try {
                   const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
-                  const res = await recordUserVoteOnce(voterId, target.id, xp);
+                  const res = await recordUserVoteOnceGroup(group.id, voterId, target.id, xp);
                   try {
                     await userUtils.resolveAndPersistName(sock, group, voterId, sender);
                   } catch (e) {
@@ -881,7 +906,7 @@ export default function registerMessageHandlers(sock) {
                 await db.write();
                 try {
                   const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
-                  const res = await recordUserVoteOnce(voterId, target.id, xp);
+                  const res = await recordUserVoteOnceGroup(group.id, voterId, target.id, xp);
                     if (res.awarded && res.newLevel > res.oldLevel) {
                       const em = helpers.pickRandom(helpers.EMOJI_POOLS.levelUp);
                       try {
@@ -928,7 +953,7 @@ export default function registerMessageHandlers(sock) {
                     await db.write();
                     try {
                       const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
-                      const res = await recordUserVoteOnce(voterId, target.id, xp);
+                      const res = await recordUserVoteOnceGroup(group.id, voterId, target.id, xp);
                       try {
                         await userUtils.resolveAndPersistName(sock, group, voterId, sender);
                       } catch (e) {
@@ -978,7 +1003,7 @@ export default function registerMessageHandlers(sock) {
                   await db.write();
                       try {
                         const xp = helpers.xpForProposal(target.openedAtISO, target.deadlineISO, CONFIG.xpPerVote || 10);
-                        const res = await recordUserVoteOnce(voterId, target.id, xp);
+                        const res = await recordUserVoteOnceGroup(group.id, voterId, target.id, xp);
                           try {
                             await userUtils.resolveAndPersistName(sock, group, voterId, sender);
                           } catch (e) {

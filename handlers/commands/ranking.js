@@ -33,7 +33,17 @@ export default async function ranking(ctx) {
   const dbUsers = listUsers() || {};
   for (const [jid, data] of Object.entries(dbUsers)) {
     const norm = jidNormalizedUser(jid);
-    usersMap[norm] = { jid: norm, name: data.name || null, xp: Number(data.xp || 0), votesCount: 0 };
+    // prefer group-scoped data when available
+    let name = data.name || null;
+    let xp = Number(data.xp || 0);
+    try {
+      if (db.data.groups && db.data.groups[group.id] && db.data.groups[group.id].users && db.data.groups[group.id].users[norm]) {
+        const gu = db.data.groups[group.id].users[norm];
+        name = gu.name || name;
+        xp = Number(gu.xp || xp || 0);
+      }
+    } catch (e) {}
+    usersMap[norm] = { jid: norm, name: name, xp: xp, votesCount: 0 };
   }
   try {
     const parts = (group && group.participants) ? group.participants.map((p) => p.id) : [];
@@ -88,7 +98,7 @@ export default async function ranking(ctx) {
     if (!display) display = r.jid ? r.jid.split('@')[0] : 'Unknown';
     resolvedRows.push({ jid: r.jid, name: display, xp: Number(r.xp || 0), votesCount: Number(r.votesCount || 0) });
   }
-  const rows = resolvedRows.sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp).slice(0, 50);
+  const rows = resolvedRows.filter(r => Number(r.xp || 0) > 0).sort((a, b) => b.votesCount - a.votesCount || b.xp - a.xp).slice(0, 50);
   const lines = rows.map((row, i) => {
     const lvl = levelFromXp(row.xp || 0);
     const title = titleForLevel(lvl.level);

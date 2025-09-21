@@ -23,14 +23,26 @@ export default async function me(ctx) {
   if (ntext !== '!me') return false;
   const voterId = jidNormalizedUser(ctx.msg.key.participant || ctx.msg.key.remoteJid);
   ctx.ensureUser(voterId);
-  const u = db.data.users[voterId] || { xp: 0, votesCount: 0 };
+  // prefer group-scoped user data when available
+  let u = { xp: 0, votesCount: 0 };
+  try {
+    if (group && group.id && db.data.groups && db.data.groups[group.id] && db.data.groups[group.id].users && db.data.groups[group.id].users[voterId]) {
+      u = db.data.groups[group.id].users[voterId];
+    } else {
+      u = db.data.users[voterId] || u;
+    }
+  } catch (e) {
+    u = db.data.users[voterId] || u;
+  }
   const lvl = helpers.levelFromXp ? helpers.levelFromXp(u.xp || 0) : ctx.levelFromXp(u.xp || 0);
   const title = ctx.titleForLevel ? ctx.titleForLevel(lvl.level) : ctx.titleForLevel(lvl.level);
   const badge = helpers.badgeForLevel ? helpers.badgeForLevel(lvl.level) : '';
   const bar = helpers.progressBar ? helpers.progressBar(lvl.xpIntoLevel, lvl.xpForNextLevel, 12) : '';
   const emoji = helpers.pickRandom ? helpers.pickRandom(helpers.EMOJI_POOLS.confirm) : '';
   const msgText = [];
-  msgText.push(`${badge} 👤 ${sender} — *Nível ${lvl.level}* (${title})`);
+  // prefer persisted name from group-scoped user or global before sender
+  const displayName = (group && group.id && db.data.groups && db.data.groups[group.id] && db.data.groups[group.id].users && db.data.groups[group.id].users[voterId] && db.data.groups[group.id].users[voterId].name) ? db.data.groups[group.id].users[voterId].name : (db.data.users[voterId] && db.data.users[voterId].name) ? db.data.users[voterId].name : sender;
+  msgText.push(`${badge} 👤 ${displayName} — *Nível ${lvl.level}* (${title})`);
   msgText.push(`XP: ${u.xp || 0} (${lvl.xpIntoLevel}/${lvl.xpForNextLevel}) ${bar}`);
   msgText.push(`Votos registrados: ${u.votesCount || 0} ${emoji}`);
   await sendReply(group.id, msgText.join('\n'));
