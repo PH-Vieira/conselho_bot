@@ -17,6 +17,7 @@ export default async function help(ctx) {
   helpMsg.push('🛠️ Conselho de Pautas — comandos principais:');
   helpMsg.push('');
   helpMsg.push('• !pauta <título> [<tempo>] — criar nova pauta (ex.: !pauta Reunião 48h)');
+  helpMsg.push('  (Ao criar, o bot pedirá que escolha a criticidade: 1=baixa, 2=média, 3=alta (unanimidade))');
   helpMsg.push('• !votar <id|nome> [sim|nao] — votar (use !votar <nome> para confirmar antes)');
   helpMsg.push('• Envie "sim"/"nao" ou ✅/❌ — votar na pauta mais recente');
   helpMsg.push('• Envie a figurinha do Conselho — trava seu voto (finaliza)');

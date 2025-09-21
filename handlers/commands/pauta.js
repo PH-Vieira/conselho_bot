@@ -27,7 +27,38 @@
  */
 export default async function pauta(ctx) {
   const { ntext, text, isDm, requireGroupContext, sendReply, group, nanoid, db, helpers, CONFIG, logger, sender } = ctx;
-  if (!ntext.startsWith('!pauta ')) return false;
+  // Handle interactive confirmation for pending proposals: user replies '1','2' or '3'
+  const voterId = ctx.jidNormalizedUser(ctx.msg.key.participant || ctx.msg.key.remoteJid);
+  await db.read();
+  db.data.pendingProposals = db.data.pendingProposals || {};
+  const pending = db.data.pendingProposals[voterId] || null;
+  if (!ntext.startsWith('!pauta ')) {
+    // If user has a pending proposal and replied with a single digit 1..3, finalize it
+    if (pending && /^[1-3]$/.test(ntext.trim())) {
+      const choice = Number(ntext.trim());
+      // map choice to approval rule
+      let approval = { type: 'quorum', quorumPercent: 0.25 };
+      if (choice === 1) approval = { type: 'quorum', quorumPercent: 0.25 };
+      else if (choice === 2) approval = { type: 'quorum', quorumPercent: 0.5 };
+      else if (choice === 3) approval = { type: 'unanimity' };
+      try {
+        const p = pending.proposal;
+        p.approval = approval;
+        p.status = 'open';
+        db.data.proposals = db.data.proposals || [];
+        db.data.proposals.push(p);
+        // cleanup pending entry
+        delete db.data.pendingProposals[voterId];
+        await db.write();
+        await sendReply(group.id, `✅ Pauta criada com criticidade selecionada: *${p.title}* (id: ${p.id}). Regra de aprovação: ${approval.type === 'unanimity' ? 'Unanimidade' : `quórum ${Math.round(approval.quorumPercent * 100)}%`}. Use !votar ${p.id} sim/nao para votar.`);
+      } catch (e) {
+        logger.error({ e, voterId, pending }, 'failed to finalize pending pauta');
+        await sendReply(group.id, '❗ Falha ao criar pauta. Tente novamente.');
+      }
+      return true;
+    }
+    return false;
+  }
   if (isDm) {
     const ok = await requireGroupContext();
     if (!ok) {
@@ -73,17 +104,29 @@ export default async function pauta(ctx) {
   } else {
     deadlineISO = helpers.computeDeadline(openedAtISO, CONFIG.voteWindowHours || 24);
   }
-  db.data.proposals.push({
-    id,
-    title,
-    openedBy: sender,
-    groupJid: group.id,
-    openedAtISO,
-    deadlineISO,
-    votes: {},
-    status: 'open'
-  });
+  // create a pending proposal and ask author to choose criticidade
+  const pendingObj = {
+    proposal: {
+      id,
+      title,
+      openedBy: sender,
+      groupJid: group.id,
+      openedAtISO,
+      deadlineISO,
+      votes: {},
+      status: 'pending'
+    },
+    expiresAtISO: new Date(Date.now() + (10 * 60 * 1000)).toISOString() // 10 minutes TTL
+  };
+  db.data.pendingProposals[voterId] = pendingObj;
   await db.write();
-  await sendReply(group.id, `✅ Pauta criada: *${title}* (id: ${id}). Use !votar ${id} sim/nao para votar.`);
+  const opt = [];
+  opt.push('Escolha a criticidade desta pauta respondendo com o número correspondente (1, 2 ou 3):');
+  opt.push('1) Baixa — exige menos votos (quórum: 25%)');
+  opt.push('2) Média — exige mais votos (quórum: 50%)');
+  opt.push('3) Alta — exige unanimidade (todos devem concordar)');
+  opt.push('Esta escolha expira em 10 minutos.');
+  await sendReply(group.id, `📝 Criando pauta: *${title}*
+${opt.join('\n')}`);
   return true;
 }

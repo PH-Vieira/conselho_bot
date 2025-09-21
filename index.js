@@ -202,6 +202,14 @@ async function run() {
     try {
       await db.read();
       cleanupPendingSelections();
+      // cleanup expired pending proposals (created by !pauta interactive flow)
+      try {
+        db.data.pendingProposals = db.data.pendingProposals || {};
+        const now = new Date().toISOString();
+        for (const [k, v] of Object.entries(db.data.pendingProposals)) {
+          if (!v || !v.expiresAtISO || v.expiresAtISO < now) delete db.data.pendingProposals[k];
+        }
+      } catch (e) {}
       await db.write();
     } catch (e) {
       logger.debug({ e }, 'periodic cleanup failed');

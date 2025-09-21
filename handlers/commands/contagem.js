@@ -12,6 +12,11 @@ export default async function contagem(ctx) {
   const locked = Object.values(target.votes || {}).filter((v) => (v && typeof v === 'object' ? !!v.final : false)).length;
   const left = (typeof ctx.helpers.humanTimeLeft === 'function') ? ctx.helpers.humanTimeLeft(target.deadlineISO) : '';
   const fmt = (typeof ctx.helpers.formatToUTCMinus3 === 'function') ? ctx.helpers.formatToUTCMinus3(target.deadlineISO) : target.deadlineISO;
-  await sendReply(group.id, `📊 Pauta: *${target.title}* (id: ${target.id})\n✔️ Sim: ${yes} — ❌ Não: ${no} — 🔒 Travados: ${locked}\n⏳ Prazo: ${left} (até ${fmt})`);
+  let ruleDesc = '';
+  if (target.approval) {
+    if (target.approval.type === 'unanimity') ruleDesc = 'Criticidade: Alta (Unanimidade).';
+    else if (target.approval.type === 'quorum') ruleDesc = `Criticidade: Quórum ${Math.round((target.approval.quorumPercent||0)*100)}%.`;
+  }
+  await sendReply(group.id, `📊 Pauta: *${target.title}* (id: ${target.id})\n✔️ Sim: ${yes} — ❌ Não: ${no} — 🔒 Travados: ${locked}\n${ruleDesc}\n⏳ Prazo: ${left} (até ${fmt})`);
   return true;
 }

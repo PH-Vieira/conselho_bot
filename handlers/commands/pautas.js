@@ -9,7 +9,12 @@ export default async function pautas(ctx) {
     }
     const lines = list.map((p) => {
       const status = p.status === 'open' ? 'aberta' : 'fechada';
-      return `• ${p.id} — ${p.title.length > 60 ? p.title.slice(0, 57) + '...' : p.title} (${status})`;
+      let rule = '';
+      if (p.approval) {
+        if (p.approval.type === 'unanimity') rule = ' — Criticidade: Alta (Unanimidade)';
+        else if (p.approval.type === 'quorum') rule = ` — Criticidade: Quorum ${Math.round((p.approval.quorumPercent||0)*100)}%`;
+      }
+      return `• ${p.id} — ${p.title.length > 60 ? p.title.slice(0, 57) + '...' : p.title} (${status})${rule}`;
     });
     await sendReply(group.id, `📜 Últimas pautas:
 ${lines.join('\n')}`);
